@@ -1,0 +1,187 @@
+import { UnImageError } from "./errors";
+import { parseImageRecipe } from "./recipe";
+import type {
+  ImageCapabilityResult,
+  ImageCapabilities,
+  ImageInput,
+  ImageDecodeRequest,
+  ImageInputDecodeOptions,
+  ImageManager,
+  ImageManagerOptions,
+  ImageMetadata,
+  ImagePipelineConfig,
+  ImageRecipe,
+  ImageResult,
+  RawImageFrame,
+  RawImageSequence,
+} from "./types";
+import { sniffImageFormat } from "./utils/format";
+
+function isRawImage(input: ImageInput): boolean {
+  return typeof input === "object" && input !== null && "layout" in input;
+}
+
+function assertDecodeOptions(options?: ImageInputDecodeOptions): void {
+  const density = options?.rasterDensity;
+  if (density !== undefined && (!Number.isInteger(density) || density < 1 || density > 10000)) {
+    throw new UnImageError("rasterDensity must be an integer between 1 and 10000.", {
+      code: "UNIMAGE_INVALID_RECIPE",
+    });
+  }
+}
+
+export function createImageManager(options: ImageManagerOptions): ImageManager {
+  const driver = options.driver;
+  let capabilitiesPromise: Promise<ImageCapabilities> | undefined;
+
+  async function capabilities(): Promise<ImageCapabilities> {
+    capabilitiesPromise ??= Promise.resolve(driver.capabilities()).catch((error: unknown) => {
+      capabilitiesPromise = undefined;
+      throw error;
+    });
+    return capabilitiesPromise;
+  }
+
+  function abortError(error: unknown, signal: AbortSignal | undefined): unknown {
+    if (error instanceof UnImageError) return error;
+    if (signal?.aborted) {
+      return new UnImageError("Image processing was aborted.", {
+        code: "UNIMAGE_ABORT",
+        cause: error,
+      });
+    }
+    return error;
+  }
+
+  const manager: ImageManager = {
+    driverName: driver.name,
+
+    capabilities,
+
+    async isConfigSupported(config: ImageRecipe): Promise<ImageCapabilityResult> {
+      const recipe = parseImageRecipe(config);
+      return await driver.checkRecipe({ ...recipe, input: recipe.input ?? {} });
+    },
+
+    async metadata(input: ImageInput, config?: { signal?: AbortSignal }): Promise<ImageMetadata> {
+      try {
+        return await driver.metadata(input, { signal: config?.signal });
+      } catch (error) {
+        if (error instanceof UnImageError) throw error;
+        throw new UnImageError("Image metadata could not be read.", {
+          code: "UNIMAGE_DECODE",
+          cause: error,
+        });
+      }
+    },
+
+    async decode(
+      input: ImageInput,
+      config?: ImageInputDecodeOptions & { signal?: AbortSignal },
+    ): Promise<RawImageFrame> {
+      assertDecodeOptions(config);
+      if (driver.decode === undefined) {
+        throw new UnImageError(`Driver "${driver.name}" cannot decode pixel frames.`, {
+          code: "UNIMAGE_UNSUPPORTED_OPERATION",
+          operation: "decode",
+        });
+      }
+      const request: ImageDecodeRequest = {};
+      if (config?.rasterDensity !== undefined) request.rasterDensity = config.rasterDensity;
+      if (config?.signal !== undefined) request.signal = config.signal;
+      try {
+        return await driver.decode(input, request);
+      } catch (error) {
+        throw abortError(error, config?.signal);
+      }
+    },
+
+    async decodeFrames(
+      input: ImageInput,
+      config?: ImageInputDecodeOptions & { signal?: AbortSignal },
+    ): Promise<RawImageSequence> {
+      assertDecodeOptions(config);
+      if (driver.decodeFrames === undefined) {
+        throw new UnImageError(`Driver "${driver.name}" cannot decode frame sequences.`, {
+          code: "UNIMAGE_UNSUPPORTED_OPERATION",
+          operation: "decodeFrames",
+        });
+      }
+      const request: ImageDecodeRequest = {};
+      if (config?.rasterDensity !== undefined) request.rasterDensity = config.rasterDensity;
+      if (config?.signal !== undefined) request.signal = config.signal;
+      try {
+        return await driver.decodeFrames(input, request);
+      } catch (error) {
+        throw abortError(error, config?.signal);
+      }
+    },
+
+    async transform(
+      input: ImageInput,
+      recipe: ImageRecipe,
+      config?: { signal?: AbortSignal },
+    ): Promise<ImageResult> {
+      const parsedRecipe = parseImageRecipe(recipe);
+      const sourceFormat = isRawImage(input) ? undefined : await sniffImageFormat(input);
+      const declaredFormat = parsedRecipe.input?.format;
+      if (declaredFormat !== undefined && declaredFormat !== sourceFormat) {
+        throw new UnImageError("The declared input format does not match the source image.", {
+          code: "UNIMAGE_INVALID_INPUT",
+        });
+      }
+
+      const pipeline: ImagePipelineConfig = {
+        input: {
+          ...(sourceFormat === undefined ? {} : { format: sourceFormat }),
+          ...(parsedRecipe.input === undefined ? {} : { ...parsedRecipe.input }),
+        },
+        operations: parsedRecipe.operations,
+        output: parsedRecipe.output,
+      };
+
+      const capability = await driver.checkRecipe(pipeline);
+      if (!capability.supported) {
+        const issue = capability.missing[0];
+        if (issue === undefined) {
+          throw new UnImageError(`Driver "${driver.name}" cannot run this pipeline.`, {
+            code: "UNIMAGE_UNSUPPORTED_FORMAT",
+          });
+        }
+        throw new UnImageError(
+          `Driver "${driver.name}" does not support ${issue.section} "${issue.key}".`,
+          {
+            code:
+              issue.section === "operations"
+                ? "UNIMAGE_UNSUPPORTED_OPERATION"
+                : "UNIMAGE_UNSUPPORTED_FORMAT",
+            operation: issue.section === "operations" ? issue.key : undefined,
+            format: issue.section === "operations" ? undefined : issue.key,
+          },
+        );
+      }
+
+      try {
+        return await driver.transform(input, parsedRecipe, { signal: config?.signal });
+      } catch (error) {
+        if (error instanceof UnImageError) throw error;
+        if (config?.signal?.aborted) {
+          throw new UnImageError("Image processing was aborted.", {
+            code: "UNIMAGE_ABORT",
+            cause: error,
+          });
+        }
+        throw new UnImageError("Image transform failed.", {
+          code: "UNIMAGE_ENCODE",
+          cause: error,
+        });
+      }
+    },
+
+    async dispose(): Promise<void> {
+      await driver.dispose?.();
+    },
+  };
+
+  return manager;
+}

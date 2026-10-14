@@ -1,0 +1,100 @@
+{
+  "name": "unimage",
+  "version": "0.0.1",
+  "description": "Unified image processing API for browsers and Node.js with typed operation recipes and pluggable drivers",
+  "keywords": [
+    "avif",
+    "browser",
+    "canvas",
+    "image",
+    "image-processing",
+    "jpeg",
+    "node",
+    "png",
+    "typescript",
+    "webp"
+  ],
+  "homepage": "https://github.com/bysages/graphics#readme",
+  "bugs": {
+    "url": "https://github.com/bysages/graphics/issues"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "By Sages",
+    "email": "contact@bysages.com",
+    "url": "https://www.bysages.com/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bysages/graphics.git",
+    "directory": "packages/unimage"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./server": {
+      "types": "./dist/server.d.mts",
+      "import": "./dist/server.mjs",
+      "default": "./dist/server.mjs"
+    },
+    "./drivers/*": {
+      "types": "./dist/drivers/*.d.mts",
+      "import": "./dist/drivers/*.mjs",
+      "default": "./dist/drivers/*.mjs"
+    }
+  },
+  "scripts": {
+    "dev": "vp pack --watch",
+    "build": "vp pack",
+    "prepack": "pnpm build",
+    "release": "basis publish"
+  },
+  "dependencies": {
+    "h3": "2.0.2",
+    "unpalette": "workspace:*"
+  },
+  "devDependencies": {
+    "@napi-rs/canvas": "1.0.11",
+    "@napi-rs/image": "1.15.0",
+    "sharp": "0.35.5",
+    "svgo": "4.1.0",
+    "unstorage": "1.17.5"
+  },
+  "peerDependencies": {
+    "@napi-rs/canvas": ">=1.0 <2",
+    "@napi-rs/image": ">=1.15 <2",
+    "sharp": "^0.35.0",
+    "svgo": "^4.1.0",
+    "unstorage": ">=1.8 <3"
+  },
+  "peerDependenciesMeta": {
+    "@napi-rs/canvas": {
+      "optional": true
+    },
+    "@napi-rs/image": {
+      "optional": true
+    },
+    "sharp": {
+      "optional": true
+    },
+    "svgo": {
+      "optional": true
+    },
+    "unstorage": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

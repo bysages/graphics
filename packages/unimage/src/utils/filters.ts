@@ -1,0 +1,587 @@
+import { hslToRgb, rgbToHsl } from "unpalette";
+
+export interface RgbaImage {
+  data: Uint8Array;
+  width: number;
+  height: number;
+}
+
+type Rgba = readonly [number, number, number, number];
+
+const clamp255 = (value: number): number => Math.max(0, Math.min(255, Math.round(value)));
+
+export function parseColor(value: string | undefined): Rgba {
+  if (value === undefined || value === "" || value === "transparent") return [0, 0, 0, 0];
+  const text = value.trim().toLowerCase();
+  if (text === "black") return [0, 0, 0, 255];
+  if (text === "white") return [255, 255, 255, 255];
+  if (text === "red") return [255, 0, 0, 255];
+  if (text === "green") return [0, 128, 0, 255];
+  if (text === "blue") return [0, 0, 255, 255];
+
+  const hex = text.match(/^#([0-9a-f]{3,8})$/);
+  if (hex?.[1]) {
+    const digits = hex[1];
+    const part = (start: number, length: number) =>
+      Number.parseInt(digits.slice(start, start + length).repeat(length === 1 ? 2 : 1), 16);
+    if (digits.length === 3 || digits.length === 4) {
+      return [part(0, 1), part(1, 1), part(2, 1), digits.length === 4 ? part(3, 1) : 255];
+    }
+    if (digits.length === 6 || digits.length === 8) {
+      return [part(0, 2), part(2, 2), part(4, 2), digits.length === 8 ? part(6, 2) : 255];
+    }
+  }
+
+  const rgb = text.match(/^rgba?\(([^)]+)\)$/);
+  if (rgb?.[1]) {
+    const parts = rgb[1].split(/[\s,/]+/).filter(Boolean);
+    const red = channelValue(parts[0]);
+    const green = channelValue(parts[1]);
+    const blue = channelValue(parts[2]);
+    const alpha = parts[3] === undefined ? 1 : Math.max(0, Math.min(1, Number(parts[3])));
+    if ([red, green, blue].every(Number.isFinite) && Number.isFinite(alpha)) {
+      return [red, green, blue, Math.round(alpha * 255)];
+    }
+  }
+
+  throw new Error(`Unsupported CSS color: ${value}`);
+}
+
+function channelValue(value: string | undefined): number {
+  const text = value ?? "";
+  return text.endsWith("%") ? (Number(text.slice(0, -1)) * 255) / 100 : Number(text);
+}
+
+function createImage(width: number, height: number, background: Rgba = [0, 0, 0, 0]): RgbaImage {
+  const data = new Uint8Array(width * height * 4);
+  for (let index = 0; index < data.length; index += 4) {
+    data[index] = background[0];
+    data[index + 1] = background[1];
+    data[index + 2] = background[2];
+    data[index + 3] = background[3];
+  }
+  return { data, width, height };
+}
+
+function cloneImage(image: RgbaImage): RgbaImage {
+  return { data: image.data.slice(), width: image.width, height: image.height };
+}
+
+function pixelIndex(image: RgbaImage, x: number, y: number): number {
+  return (y * image.width + x) * 4;
+}
+
+function channels(input: Uint8Array, index: number): [number, number, number] {
+  return [input[index] as number, input[index + 1] as number, input[index + 2] as number];
+}
+
+function medianImage(image: RgbaImage, size: number): RgbaImage {
+  const output = cloneImage(image);
+  const radius = Math.floor(size / 2);
+  const values: number[] = [];
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      for (let channel = 0; channel < 3; channel += 1) {
+        values.length = 0;
+        for (let row = -radius; row <= radius; row += 1) {
+          for (let column = -radius; column <= radius; column += 1) {
+            const sampleY = Math.max(0, Math.min(image.height - 1, y + row));
+            const sampleX = Math.max(0, Math.min(image.width - 1, x + column));
+            values.push(image.data[pixelIndex(image, sampleX, sampleY) + channel] as number);
+          }
+        }
+        values.sort((left, right) => left - right);
+        output.data[pixelIndex(output, x, y) + channel] = values[
+          Math.floor(values.length / 2)
+        ] as number;
+      }
+    }
+  }
+  return output;
+}
+
+function morphology(image: RgbaImage, size: number, mode: "dilate" | "erode"): RgbaImage {
+  const output = cloneImage(image);
+  const radius = Math.floor(size / 2);
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      for (let channel = 0; channel < 3; channel += 1) {
+        let value = mode === "dilate" ? 0 : 255;
+        for (let row = -radius; row <= radius; row += 1) {
+          for (let column = -radius; column <= radius; column += 1) {
+            const sampleY = Math.max(0, Math.min(image.height - 1, y + row));
+            const sampleX = Math.max(0, Math.min(image.width - 1, x + column));
+            const sample = image.data[pixelIndex(image, sampleX, sampleY) + channel] as number;
+            value = mode === "dilate" ? Math.max(value, sample) : Math.min(value, sample);
+          }
+        }
+        output.data[pixelIndex(output, x, y) + channel] = value;
+      }
+    }
+  }
+  return output;
+}
+
+function luma(red: number, green: number, blue: number): number {
+  return 0.299 * red + 0.587 * green + 0.114 * blue;
+}
+
+function sharpenImage(
+  image: RgbaImage,
+  operation: { sigma?: number; flat?: number; jagged?: number },
+): RgbaImage {
+  const sigma = Math.max(0.1, operation.sigma ?? 1);
+  const radius = Math.max(1, Math.ceil(sigma * 3));
+  const kernel: number[] = [];
+  let sum = 0;
+  for (let offset = -radius; offset <= radius; offset += 1) {
+    const value = Math.exp(-(offset * offset) / (2 * sigma * sigma));
+    kernel.push(value);
+    sum += value;
+  }
+  for (let index = 0; index < kernel.length; index += 1)
+    kernel[index] = (kernel[index] as number) / sum;
+
+  const blurred = cloneImage(image);
+  const horizontal = cloneImage(image);
+  const width = image.width;
+  const height = image.height;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let red = 0;
+      let green = 0;
+      let blue = 0;
+      for (let offset = -radius; offset <= radius; offset += 1) {
+        const sampleX = Math.max(0, Math.min(width - 1, x + offset));
+        const index = pixelIndex(image, sampleX, y);
+        const weight = kernel[offset + radius] as number;
+        red += (image.data[index] as number) * weight;
+        green += (image.data[index + 1] as number) * weight;
+        blue += (image.data[index + 2] as number) * weight;
+      }
+      const target = pixelIndex(horizontal, x, y);
+      horizontal.data[target] = clamp255(red);
+      horizontal.data[target + 1] = clamp255(green);
+      horizontal.data[target + 2] = clamp255(blue);
+    }
+  }
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let red = 0;
+      let green = 0;
+      let blue = 0;
+      for (let offset = -radius; offset <= radius; offset += 1) {
+        const sampleY = Math.max(0, Math.min(height - 1, y + offset));
+        const index = pixelIndex(horizontal, x, sampleY);
+        const weight = kernel[offset + radius] as number;
+        red += (horizontal.data[index] as number) * weight;
+        green += (horizontal.data[index + 1] as number) * weight;
+        blue += (horizontal.data[index + 2] as number) * weight;
+      }
+      const target = pixelIndex(blurred, x, y);
+      blurred.data[target] = clamp255(red);
+      blurred.data[target + 1] = clamp255(green);
+      blurred.data[target + 2] = clamp255(blue);
+    }
+  }
+
+  const output = cloneImage(image);
+  const flat = (operation.flat ?? 1) / 255;
+  const jagged = (operation.jagged ?? 2) / 255;
+  const amount = Math.max(0, Math.min(2, sigma / 2 + 0.5));
+  for (let index = 0; index < output.data.length; index += 4) {
+    for (let channel = 0; channel < 3; channel += 1) {
+      const original = output.data[index + channel] as number;
+      const delta = original - (blurred.data[index + channel] as number);
+      const magnitude = Math.abs(delta) / 255;
+      if (magnitude <= flat) continue;
+      const clamped = Math.max(-jagged, Math.min(jagged, delta / 255)) * 255;
+      output.data[index + channel] = clamp255(original + clamped * amount);
+    }
+  }
+  return output;
+}
+
+function claheImage(
+  image: RgbaImage,
+  operation: { width: number; height: number; maxSlope?: number },
+): RgbaImage {
+  const tileColumns = Math.max(1, Math.min(image.width, operation.width));
+  const tileRows = Math.max(1, Math.min(image.height, operation.height));
+  const tileWidth = Math.ceil(image.width / tileColumns);
+  const tileHeight = Math.ceil(image.height / tileRows);
+  const maxSlope = operation.maxSlope ?? 3;
+  const bins = 256;
+
+  const luts: Uint8Array[] = [];
+  for (let row = 0; row < tileRows; row += 1) {
+    for (let column = 0; column < tileColumns; column += 1) {
+      const histogram = new Uint32Array(bins);
+      const yStart = row * tileHeight;
+      const yEnd = Math.min(image.height, yStart + tileHeight);
+      const xStart = column * tileWidth;
+      const xEnd = Math.min(image.width, xStart + tileWidth);
+      let total = 0;
+      for (let y = yStart; y < yEnd; y += 1) {
+        for (let x = xStart; x < xEnd; x += 1) {
+          const index = pixelIndex(image, x, y);
+          if ((image.data[index + 3] as number) === 0) continue;
+          const value = Math.round(
+            luma(
+              image.data[index] as number,
+              image.data[index + 1] as number,
+              image.data[index + 2] as number,
+            ),
+          );
+          const bin = Math.max(0, Math.min(255, value));
+          histogram[bin] = (histogram[bin] ?? 0) + 1;
+          total += 1;
+        }
+      }
+      if (total === 0) {
+        luts.push(new Uint8Array(bins).map((_, value) => value));
+        continue;
+      }
+      const clipLimit = Math.max(1, Math.floor((maxSlope * total) / bins));
+      let excess = 0;
+      for (let value = 0; value < bins; value += 1) {
+        if ((histogram[value] as number) > clipLimit) {
+          excess += (histogram[value] as number) - clipLimit;
+          histogram[value] = clipLimit;
+        }
+      }
+      const redistribution = Math.floor(excess / bins);
+      for (let value = 0; value < bins; value += 1)
+        histogram[value] = (histogram[value] as number) + redistribution;
+      const lut = new Uint8Array(bins);
+      let cumulative = 0;
+      for (let value = 0; value < bins; value += 1) {
+        cumulative += histogram[value] as number;
+        lut[value] = clamp255((cumulative / total) * 255);
+      }
+      luts.push(lut);
+    }
+  }
+
+  const output = cloneImage(image);
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      const index = pixelIndex(image, x, y);
+      const red = image.data[index] as number;
+      const green = image.data[index + 1] as number;
+      const blue = image.data[index + 2] as number;
+      const value = luma(red, green, blue);
+      const column = Math.min(tileColumns - 1, Math.floor(x / tileWidth));
+      const row = Math.min(tileRows - 1, Math.floor(y / tileHeight));
+      const lut = luts[row * tileColumns + column] as Uint8Array;
+      const mapped = lut[Math.max(0, Math.min(255, Math.round(value)))] as number;
+      if (value <= 0) continue;
+      const gain = mapped / value;
+      output.data[index] = clamp255(red * gain);
+      output.data[index + 1] = clamp255(green * gain);
+      output.data[index + 2] = clamp255(blue * gain);
+    }
+  }
+  return output;
+}
+
+export function applyPixelFilter(
+  image: RgbaImage,
+  operation: Extract<
+    import("../types").ImageOperation,
+    {
+      type:
+        | "trim"
+        | "extend"
+        | "sharpen"
+        | "median"
+        | "dilate"
+        | "erode"
+        | "clahe"
+        | "flatten"
+        | "unflatten"
+        | "gamma"
+        | "normalize"
+        | "threshold"
+        | "linear"
+        | "modulate"
+        | "opacity"
+        | "tint";
+    }
+  >,
+): RgbaImage {
+  switch (operation.type) {
+    case "trim": {
+      const threshold = operation.threshold ?? 10;
+      const [backgroundRed, backgroundGreen, backgroundBlue, backgroundAlpha] =
+        parseColor("#00000000");
+      void backgroundRed;
+      void backgroundGreen;
+      void backgroundBlue;
+      void backgroundAlpha;
+      const reference = channels(image.data, 0);
+      let top = 0;
+      let bottom = image.height - 1;
+      let left = 0;
+      let right = image.width - 1;
+      const differs = (index: number): boolean => {
+        return (
+          Math.abs((image.data[index] as number) - reference[0]) > threshold ||
+          Math.abs((image.data[index + 1] as number) - reference[1]) > threshold ||
+          Math.abs((image.data[index + 2] as number) - reference[2]) > threshold ||
+          Math.abs((image.data[index + 3] as number) - 255) > threshold
+        );
+      };
+      while (
+        top < bottom &&
+        ![...Array(image.width).keys()].some((x) => differs(pixelIndex(image, x, top)))
+      )
+        top += 1;
+      while (
+        bottom > top &&
+        ![...Array(image.width).keys()].some((x) => differs(pixelIndex(image, x, bottom)))
+      )
+        bottom -= 1;
+      while (
+        left < right &&
+        ![...Array(image.height).keys()].some((y) => differs(pixelIndex(image, left, y)))
+      )
+        left += 1;
+      while (
+        right > left &&
+        ![...Array(image.height).keys()].some((y) => differs(pixelIndex(image, right, y)))
+      )
+        right -= 1;
+      const width = right - left + 1;
+      const height = bottom - top + 1;
+      const output = createImage(width, height);
+      for (let y = 0; y < height; y += 1) {
+        output.data.set(
+          image.data.subarray(
+            pixelIndex(image, left, top + y),
+            pixelIndex(image, left, top + y) + width * 4,
+          ),
+          y * width * 4,
+        );
+      }
+      return output;
+    }
+    case "extend": {
+      const mode = operation.extendWith ?? "background";
+      const outputWidth = image.width + operation.left + operation.right;
+      const outputHeight = image.height + operation.top + operation.bottom;
+      const output = createImage(
+        outputWidth,
+        outputHeight,
+        mode === "background" ? parseColor(operation.background) : [0, 0, 0, 0],
+      );
+      for (let y = 0; y < image.height; y += 1) {
+        const source = pixelIndex(image, 0, y);
+        const target = pixelIndex(output, operation.left, y + operation.top);
+        output.data.set(image.data.subarray(source, source + image.width * 4), target);
+      }
+      if (mode === "copy") {
+        for (let y = 0; y < outputHeight; y += 1) {
+          const sourceY = Math.max(0, Math.min(image.height - 1, y - operation.top));
+          if (y - operation.top === sourceY) continue;
+          const sourceRow = pixelIndex(image, 0, sourceY);
+          output.data.set(
+            image.data.subarray(sourceRow, sourceRow + image.width * 4),
+            pixelIndex(output, operation.left, y),
+          );
+        }
+      } else if (mode === "repeat" || mode === "mirror") {
+        for (let y = 0; y < outputHeight; y += 1) {
+          for (let x = 0; x < outputWidth; x += 1) {
+            const innerX = x - operation.left;
+            const innerY = y - operation.top;
+            if (innerX >= 0 && innerX < image.width && innerY >= 0 && innerY < image.height)
+              continue;
+            let sourceX: number;
+            let sourceY: number;
+            if (mode === "repeat") {
+              sourceX = ((innerX % image.width) + image.width) % image.width;
+              sourceY = ((innerY % image.height) + image.height) % image.height;
+            } else {
+              const periodX = image.width * 2;
+              const periodY = image.height * 2;
+              const foldedX = ((innerX % periodX) + periodX) % periodX;
+              const foldedY = ((innerY % periodY) + periodY) % periodY;
+              sourceX = foldedX < image.width ? foldedX : periodX - foldedX - 1;
+              sourceY = foldedY < image.height ? foldedY : periodY - foldedY - 1;
+            }
+            const source = pixelIndex(image, sourceX, sourceY);
+            const target = pixelIndex(output, x, y);
+            output.data[target] = image.data[source] as number;
+            output.data[target + 1] = image.data[source + 1] as number;
+            output.data[target + 2] = image.data[source + 2] as number;
+            output.data[target + 3] = image.data[source + 3] as number;
+          }
+        }
+      }
+      return output;
+    }
+    case "sharpen":
+      return sharpenImage(image, operation);
+    case "median":
+      return medianImage(image, operation.size);
+    case "dilate":
+    case "erode":
+      return morphology(image, operation.size, operation.type);
+    case "clahe":
+      return claheImage(image, operation);
+    case "flatten": {
+      const background = parseColor(operation.background ?? "#000000");
+      const output = cloneImage(image);
+      for (let index = 0; index < output.data.length; index += 4) {
+        const alpha = (output.data[index + 3] as number) / 255;
+        output.data[index] = clamp255(
+          (output.data[index] as number) * alpha + background[0] * (1 - alpha),
+        );
+        output.data[index + 1] = clamp255(
+          (output.data[index + 1] as number) * alpha + background[1] * (1 - alpha),
+        );
+        output.data[index + 2] = clamp255(
+          (output.data[index + 2] as number) * alpha + background[2] * (1 - alpha),
+        );
+        output.data[index + 3] = 255;
+      }
+      return output;
+    }
+    case "unflatten": {
+      const output = cloneImage(image);
+      for (let index = 0; index < output.data.length; index += 4) {
+        const alpha = output.data[index + 3] as number;
+        if (alpha > 0) {
+          output.data[index] = clamp255(((output.data[index] as number) * 255) / alpha);
+          output.data[index + 1] = clamp255(((output.data[index + 1] as number) * 255) / alpha);
+          output.data[index + 2] = clamp255(((output.data[index + 2] as number) * 255) / alpha);
+        }
+        output.data[index + 3] = 255;
+      }
+      return output;
+    }
+    case "gamma": {
+      const output = cloneImage(image);
+      const ratio = operation.gamma / (operation.gammaOut ?? operation.gamma);
+      for (let index = 0; index < output.data.length; index += 4) {
+        for (let channel = 0; channel < 3; channel += 1) {
+          const value = (output.data[index + channel] as number) / 255;
+          output.data[index + channel] = clamp255(value ** ratio * 255);
+        }
+      }
+      return output;
+    }
+    case "normalize": {
+      const histogram = Array.from({ length: 256 }, () => 0);
+      for (let index = 0; index < image.data.length; index += 4) {
+        if ((image.data[index + 3] as number) > 0) {
+          histogram[image.data[index] as number] =
+            (histogram[image.data[index] as number] ?? 0) + 1;
+          histogram[image.data[index + 1] as number] =
+            (histogram[image.data[index + 1] as number] ?? 0) + 1;
+          histogram[image.data[index + 2] as number] =
+            (histogram[image.data[index + 2] as number] ?? 0) + 1;
+        }
+      }
+      const total = histogram.reduce((sum, count) => sum + count, 0);
+      const lowerTarget = total * ((operation.lower ?? 0) / 100);
+      const upperTarget = total * ((operation.upper ?? 100) / 100);
+      let cumulative = 0;
+      let lower = 0;
+      let upper = 255;
+      for (let value = 0; value < 256; value += 1) {
+        cumulative += histogram[value] ?? 0;
+        if (cumulative <= lowerTarget) lower = value;
+        if (cumulative < upperTarget) upper = value;
+      }
+      if (upper <= lower) return image;
+      const output = cloneImage(image);
+      for (let index = 0; index < output.data.length; index += 4) {
+        for (let channel = 0; channel < 3; channel += 1) {
+          const value = output.data[index + channel] as number;
+          output.data[index + channel] = clamp255(((value - lower) / (upper - lower)) * 255);
+        }
+      }
+      return output;
+    }
+    case "threshold": {
+      const output = cloneImage(image);
+      for (let index = 0; index < output.data.length; index += 4) {
+        if (operation.grayscale === true) {
+          const luma =
+            0.299 * (output.data[index] as number) +
+            0.587 * (output.data[index + 1] as number) +
+            0.114 * (output.data[index + 2] as number);
+          const value = luma >= operation.value ? 255 : 0;
+          output.data[index] = value;
+          output.data[index + 1] = value;
+          output.data[index + 2] = value;
+        } else {
+          for (let channel = 0; channel < 3; channel += 1) {
+            output.data[index + channel] =
+              (output.data[index + channel] as number) >= operation.value ? 255 : 0;
+          }
+        }
+      }
+      return output;
+    }
+    case "linear": {
+      const multiplier = operation.a ?? 1;
+      const offset = operation.b ?? 0;
+      const output = cloneImage(image);
+      for (let index = 0; index < output.data.length; index += 4) {
+        for (let channel = 0; channel < 3; channel += 1) {
+          output.data[index + channel] = clamp255(
+            (output.data[index + channel] as number) * multiplier + offset,
+          );
+        }
+      }
+      return output;
+    }
+    case "modulate": {
+      const output = cloneImage(image);
+      for (let index = 0; index < output.data.length; index += 4) {
+        let [red, green, blue] = channels(output.data, index);
+        if (operation.brightness !== undefined) {
+          red = clamp255(red * operation.brightness);
+          green = clamp255(green * operation.brightness);
+          blue = clamp255(blue * operation.brightness);
+        }
+        const original = rgbToHsl({ r: red, g: green, b: blue });
+        const hue =
+          operation.hue === undefined ? original.h : (original.h + operation.hue + 360) % 360;
+        const saturation =
+          operation.saturation === undefined
+            ? original.s
+            : Math.max(0, Math.min(1, original.s * operation.saturation));
+        const lightness =
+          operation.lightness === undefined
+            ? original.l
+            : Math.max(0, Math.min(1, original.l + operation.lightness / 100));
+        const modulated = hslToRgb({ h: hue, s: saturation, l: lightness });
+        output.data[index] = modulated.r;
+        output.data[index + 1] = modulated.g;
+        output.data[index + 2] = modulated.b;
+      }
+      return output;
+    }
+    case "opacity": {
+      const output = cloneImage(image);
+      for (let index = 3; index < output.data.length; index += 4) {
+        output.data[index] = clamp255((output.data[index] as number) * operation.factor);
+      }
+      return output;
+    }
+    case "tint": {
+      const [red, green, blue] = parseColor(operation.color);
+      const output = cloneImage(image);
+      for (let index = 0; index < output.data.length; index += 4) {
+        output.data[index] = clamp255((output.data[index] as number) * (red / 255));
+        output.data[index + 1] = clamp255((output.data[index + 1] as number) * (green / 255));
+        output.data[index + 2] = clamp255((output.data[index + 2] as number) * (blue / 255));
+      }
+      return output;
+    }
+  }
+}

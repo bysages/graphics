@@ -1,0 +1,51 @@
+{
+  "name": "unpalette",
+  "version": "0.0.1",
+  "description": "Color palette extraction, quantization, and remapping for browsers and Node.js with zero runtime dependencies",
+  "keywords": [
+    "color",
+    "image",
+    "median-cut",
+    "palette",
+    "quantize",
+    "typescript"
+  ],
+  "homepage": "https://github.com/bysages/graphics#readme",
+  "bugs": {
+    "url": "https://github.com/bysages/graphics/issues"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "By Sages",
+    "email": "contact@bysages.com",
+    "url": "https://www.bysages.com/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bysages/graphics.git",
+    "directory": "packages/unpalette"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "dev": "vp pack --watch",
+    "build": "vp pack",
+    "prepack": "pnpm build",
+    "release": "basis publish"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

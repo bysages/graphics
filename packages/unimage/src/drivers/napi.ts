@@ -1,0 +1,996 @@
+import { UnImageError } from "../errors";
+import { checkRecipeCapabilities } from "../recipe";
+import type {
+  ImageCapabilities,
+  ImageDecodeRequest,
+  ImageDriver,
+  ImageFormat,
+  ImageInput,
+  ImageMetadata,
+  ImageOperation,
+  ImageCapabilityResult,
+  ImagePipelineConfig,
+  ImageResult,
+  RawImageFrame,
+  RawImageData,
+} from "../types";
+import { applyPixelFilter } from "../utils/filters";
+import { sniffImageFormat } from "../utils/format";
+import { decodeSvg, parseSvgMetadata } from "./svgo";
+
+interface NapiTransformer {
+  metadata(withExif?: boolean | null, signal?: AbortSignal | null): Promise<NapiImageMetadata>;
+  rotate(orientation?: number | null): this;
+  grayscale(): this;
+  invert(): this;
+  resize(
+    widthOrOptions:
+      | number
+      | {
+          width: number;
+          height?: number;
+          filter?: number;
+          fit?: number;
+        },
+    height?: number | null,
+    filter?: number | null,
+    fit?: number | null,
+  ): this;
+  blur(sigma: number): this;
+  rawPixels(signal?: AbortSignal | null): Promise<Uint8Array>;
+  crop(x: number, y: number, width: number, height: number): this;
+  png(options?: object | null, signal?: AbortSignal | null): Promise<Uint8Array>;
+  jpeg(quality?: number | null, signal?: AbortSignal | null): Promise<Uint8Array>;
+  webp(qualityFactor?: number | null, signal?: AbortSignal | null): Promise<Uint8Array>;
+  avif(options?: { quality?: number }, signal?: AbortSignal | null): Promise<Uint8Array>;
+}
+
+interface NapiTransformerConstructor {
+  new (input: Uint8Array): NapiTransformer;
+  fromSvg(svg: string, background?: string): NapiTransformer;
+  fromRgbaPixels(
+    input: Uint8Array | Uint8ClampedArray,
+    width: number,
+    height: number,
+  ): NapiTransformer;
+}
+
+interface NapiImageMetadata {
+  width: number;
+  height: number;
+  orientation?: number;
+  format: string;
+  colorType: number;
+}
+
+export interface NapiModule {
+  Transformer: NapiTransformerConstructor;
+}
+
+export interface NapiDriverOptions {
+  /**
+   * Node normally resolves the native module automatically. Browser and Edge
+   * runtimes should inject the WASI build after its asynchronous initialization.
+   */
+  lib?: NapiModule | (() => NapiModule | Promise<NapiModule>);
+}
+
+const resizeFilterNearest = 0;
+const resizeFilterTriangle = 1;
+const resizeFilterCatmullRom = 2;
+const resizeFilterLanczos3 = 4;
+const resizeFitCover = 0;
+const resizeFitFill = 1;
+const resizeFitInside = 2;
+const orientationHorizontal = 1;
+const orientationMirrorHorizontal = 2;
+const orientationMirrorVertical = 4;
+const orientationRotate180 = 3;
+const orientationRotate90Cw = 6;
+const orientationRotate270Cw = 8;
+const alphaColorTypes = new Set([1, 3, 5, 7, 9]);
+
+const formats: readonly ImageFormat[] = ["png", "jpeg", "webp", "avif"];
+const mediaTypes: Record<ImageFormat, string> = {
+  gif: "image/gif",
+  heic: "image/heic",
+  heif: "image/heif",
+  tiff: "image/tiff",
+  svg: "image/svg+xml",
+  png: "image/png",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  avif: "image/avif",
+};
+
+function isRawImage(input: ImageInput): input is RawImageData {
+  return (
+    typeof input === "object" &&
+    input !== null &&
+    "data" in input &&
+    "width" in input &&
+    "height" in input &&
+    "layout" in input
+  );
+}
+
+function formatFromNapi(value: string): ImageFormat | undefined {
+  const normalized = value.trim().toLowerCase();
+  return (formats as readonly string[]).includes(normalized)
+    ? (normalized as ImageFormat)
+    : undefined;
+}
+
+function checkAborted(signal: AbortSignal | undefined, stage: string): void {
+  if (signal?.aborted) {
+    throw new UnImageError(`Image ${stage} was aborted.`, { code: "UNIMAGE_ABORT" });
+  }
+}
+
+async function loadModule(options: NapiDriverOptions): Promise<NapiModule> {
+  if (typeof options.lib === "function") return await options.lib();
+  if (options.lib) return options.lib;
+
+  try {
+    return (await import("@napi-rs/image")) as NapiModule;
+  } catch (error) {
+    throw new UnImageError(
+      'The "@napi-rs/image" driver dependency is unavailable in this runtime.',
+      {
+        code: "UNIMAGE_DRIVER_UNAVAILABLE",
+        cause: error,
+      },
+    );
+  }
+}
+
+async function createTransformer(module: NapiModule, input: ImageInput): Promise<NapiTransformer> {
+  try {
+    if (isRawImage(input)) {
+      const expected = input.width * input.height * 4;
+      if (input.layout !== "rgba8" || input.data.length < expected) {
+        throw new UnImageError("Raw image data does not match its declared dimensions.", {
+          code: "UNIMAGE_INVALID_INPUT",
+        });
+      }
+      return module.Transformer.fromRgbaPixels(input.data, input.width, input.height);
+    }
+
+    const bytes =
+      input instanceof Blob
+        ? new Uint8Array(await input.arrayBuffer())
+        : input instanceof Uint8Array
+          ? input
+          : new Uint8Array(input);
+    if ((await sniffImageFormat(bytes)) === "svg") {
+      const svg = await decodeSvg(bytes);
+      const { width, height } = parseSvgMetadata(svg);
+      // fromSvg rasterizes at a fixed oversampled scale, so restore the
+      // declared SVG dimensions before any recipe operations run.
+      return module.Transformer.fromSvg(svg).resize(
+        width,
+        height,
+        resizeFilterLanczos3,
+        resizeFitFill,
+      );
+    }
+    return new module.Transformer(bytes);
+  } catch (error) {
+    if (error instanceof UnImageError) throw error;
+    if (error instanceof Error && /Could not find module|Cannot find module/.test(error.message)) {
+      throw new UnImageError(
+        'The "@napi-rs/image" driver dependency is unavailable in this runtime.',
+        { code: "UNIMAGE_DRIVER_UNAVAILABLE", cause: error },
+      );
+    }
+    throw new UnImageError("The image could not be decoded.", {
+      code: "UNIMAGE_DECODE",
+      cause: error,
+    });
+  }
+}
+
+function normalizeMetadata(metadata: NapiImageMetadata, byteLength?: number): ImageMetadata {
+  const normalized: ImageMetadata = {
+    width: metadata.width,
+    height: metadata.height,
+  };
+  const format = formatFromNapi(metadata.format);
+  if (format !== undefined) normalized.format = format;
+  normalized.mediaType = format === undefined ? "application/octet-stream" : mediaTypes[format];
+  if (byteLength !== undefined) normalized.byteLength = byteLength;
+  if (alphaColorTypes.has(metadata.colorType)) normalized.hasAlpha = true;
+  if (
+    metadata.orientation !== undefined &&
+    metadata.orientation >= 1 &&
+    metadata.orientation <= 8
+  ) {
+    normalized.orientation = metadata.orientation as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+  }
+  return normalized;
+}
+
+function resizeValues(
+  operation: Extract<ImageOperation, { type: "resize" }>,
+  width: number,
+  height: number,
+): { width: number; height: number } | undefined {
+  const fit = operation.fit ?? "cover";
+
+  if (operation.width === undefined || operation.height === undefined) {
+    const targetWidth = operation.width;
+    const targetHeight = operation.height;
+    if (operation.withoutEnlargement === true) {
+      if (targetWidth !== undefined && targetWidth >= width) return undefined;
+      if (targetHeight !== undefined && targetHeight >= height) return undefined;
+    }
+    const sourceWidth = targetWidth === undefined ? width : targetWidth;
+    const sourceHeight = targetHeight === undefined ? height : targetHeight;
+    const scale =
+      targetWidth === undefined ? (targetHeight ?? height) / height : targetWidth / width;
+    return {
+      width: Math.max(1, Math.round(sourceWidth * scale)),
+      height: Math.max(1, Math.round(sourceHeight * scale)),
+    };
+  }
+
+  if (fit === "outside") {
+    const scale = Math.max(operation.width / width, operation.height / height);
+    if (operation.withoutEnlargement === true && scale > 1) return undefined;
+    return {
+      width: Math.max(1, Math.round(width * scale)),
+      height: Math.max(1, Math.round(height * scale)),
+    };
+  }
+
+  const scale =
+    fit === "cover"
+      ? Math.max(operation.width / width, operation.height / height)
+      : Math.min(operation.width / width, operation.height / height);
+  if (operation.withoutEnlargement === true && scale > 1) return undefined;
+  return { width: operation.width, height: operation.height };
+}
+
+function assertCrop(
+  operation: Extract<ImageOperation, { type: "crop" }>,
+  width: number,
+  height: number,
+): void {
+  if (operation.x + operation.width > width || operation.y + operation.height > height) {
+    throw new UnImageError("Crop bounds extend beyond the current image.", {
+      code: "UNIMAGE_INVALID_RECIPE",
+      operation: "crop",
+    });
+  }
+}
+
+function rotateOrientation(angle: number): number | undefined {
+  const normalized = ((angle % 360) + 360) % 360;
+  if (normalized === 0) return orientationHorizontal;
+  if (normalized === 90) return orientationRotate90Cw;
+  if (normalized === 180) return orientationRotate180;
+  if (normalized === 270) return orientationRotate270Cw;
+  return undefined;
+}
+
+function coverCropOrigin(
+  position:
+    | "top"
+    | "right top"
+    | "right"
+    | "right bottom"
+    | "bottom"
+    | "left bottom"
+    | "left"
+    | "left top"
+    | "center"
+    | "entropy"
+    | "attention",
+  scaledWidth: number,
+  scaledHeight: number,
+  targetWidth: number,
+  targetHeight: number,
+  focus?: readonly [number, number],
+): [number, number] {
+  if (focus) {
+    const x = Math.round(focus[0] * scaledWidth - targetWidth / 2);
+    const y = Math.round(focus[1] * scaledHeight - targetHeight / 2);
+    return [
+      Math.max(0, Math.min(scaledWidth - targetWidth, x)),
+      Math.max(0, Math.min(scaledHeight - targetHeight, y)),
+    ];
+  }
+  const x =
+    position === "left" || position === "left top" || position === "left bottom"
+      ? 0
+      : position === "right" || position === "right top" || position === "right bottom"
+        ? scaledWidth - targetWidth
+        : Math.floor((scaledWidth - targetWidth) / 2);
+  const y =
+    position === "top" || position === "left top" || position === "right top"
+      ? 0
+      : position === "bottom" || position === "left bottom" || position === "right bottom"
+        ? scaledHeight - targetHeight
+        : Math.floor((scaledHeight - targetHeight) / 2);
+  return [x, y];
+}
+function smartFocus(
+  image: { data: Uint8Array; width: number; height: number },
+  mode: "entropy" | "attention",
+): [number, number] {
+  const stride = Math.max(1, Math.ceil(Math.max(image.width, image.height) / 256));
+  const smallWidth = Math.max(1, Math.floor(image.width / stride));
+  const smallHeight = Math.max(1, Math.floor(image.height / stride));
+  const scores = new Float64Array(smallWidth * smallHeight);
+  const lumaAt = (x: number, y: number): number => {
+    const index =
+      (Math.max(0, Math.min(image.height - 1, y)) * image.width +
+        Math.max(0, Math.min(image.width - 1, x))) *
+      4;
+    return (
+      0.299 * (image.data[index] as number) +
+      0.587 * (image.data[index + 1] as number) +
+      0.114 * (image.data[index + 2] as number)
+    );
+  };
+  for (let y = 0; y < smallHeight; y += 1) {
+    for (let x = 0; x < smallWidth; x += 1) {
+      const sourceX = Math.min(image.width - 1, x * stride);
+      const sourceY = Math.min(image.height - 1, y * stride);
+      if (mode === "attention") {
+        const left = lumaAt(sourceX - stride, sourceY);
+        const right = lumaAt(sourceX + stride, sourceY);
+        const up = lumaAt(sourceX, sourceY - stride);
+        const down = lumaAt(sourceX, sourceY + stride);
+        scores[y * smallWidth + x] = Math.abs(right - left) + Math.abs(down - up);
+      } else {
+        let entropy = 0;
+        const histogram = new Map<number, number>();
+        const radius = 4;
+        let total = 0;
+        for (let dy = -radius; dy <= radius; dy += radius) {
+          for (let dx = -radius; dx <= radius; dx += radius) {
+            const value = Math.round(lumaAt(sourceX + dx * stride, sourceY + dy * stride));
+            histogram.set(value, (histogram.get(value) ?? 0) + 1);
+            total += 1;
+          }
+        }
+        for (const count of histogram.values()) {
+          const probability = count / total;
+          entropy -= probability * Math.log2(probability);
+        }
+        scores[y * smallWidth + x] = entropy;
+      }
+    }
+  }
+
+  const windowWidth = Math.max(1, Math.floor(smallWidth * 0.5));
+  const windowHeight = Math.max(1, Math.floor(smallHeight * 0.5));
+  let bestScore = Number.NEGATIVE_INFINITY;
+  let bestX = smallWidth / 2;
+  let bestY = smallHeight / 2;
+  for (let y = 0; y + windowHeight <= smallHeight; y += 1) {
+    for (let x = 0; x + windowWidth <= smallWidth; x += 1) {
+      let total = 0;
+      for (let dy = 0; dy < windowHeight; dy += 1) {
+        for (let dx = 0; dx < windowWidth; dx += 1)
+          total += scores[(y + dy) * smallWidth + x + dx] as number;
+      }
+      if (total > bestScore) {
+        bestScore = total;
+        bestX = x + windowWidth / 2;
+        bestY = y + windowHeight / 2;
+      }
+    }
+  }
+  return [bestX / smallWidth, bestY / smallHeight];
+}
+
+async function applyOperation(
+  module: NapiModule,
+  transformer: NapiTransformer,
+  operation: ImageOperation,
+  signal: AbortSignal | undefined,
+): Promise<ImageInput | void> {
+  checkAborted(signal, "transform");
+
+  switch (operation.type) {
+    case "autoOrient":
+      transformer.rotate();
+      return;
+    case "resize": {
+      const current = await transformer.metadata(false, signal);
+      const target = resizeValues(operation, current.width, current.height);
+      if (!target) return;
+      const filter =
+        operation.kernel === "nearest"
+          ? resizeFilterNearest
+          : operation.kernel === "linear"
+            ? resizeFilterTriangle
+            : operation.kernel === "cubic" || operation.kernel === "mitchell"
+              ? resizeFilterCatmullRom
+              : resizeFilterLanczos3;
+      if (
+        operation.fit === "cover" &&
+        operation.position !== undefined &&
+        operation.position !== "center" &&
+        operation.width !== undefined &&
+        operation.height !== undefined
+      ) {
+        const scale = Math.max(operation.width / current.width, operation.height / current.height);
+        const scaledWidth = Math.max(target.width, Math.ceil(current.width * scale));
+        const scaledHeight = Math.max(target.height, Math.ceil(current.height * scale));
+        transformer.resize({
+          width: scaledWidth,
+          height: scaledHeight,
+          filter,
+          fit: resizeFitFill,
+        });
+        let focus: readonly [number, number] | undefined;
+        if (operation.position === "entropy" || operation.position === "attention") {
+          const raw = await transformer.rawPixels(signal);
+          focus = smartFocus(
+            { data: new Uint8Array(raw), width: current.width, height: current.height },
+            operation.position === "entropy" ? "entropy" : "attention",
+          );
+        }
+        const [x, y] = coverCropOrigin(
+          operation.position,
+          scaledWidth,
+          scaledHeight,
+          target.width,
+          target.height,
+          focus,
+        );
+        transformer.crop(x, y, target.width, target.height);
+        return;
+      }
+      const fit =
+        operation.fit === "cover"
+          ? resizeFitCover
+          : operation.fit === "fill" || operation.fit === "outside"
+            ? resizeFitFill
+            : resizeFitInside;
+      transformer.resize({ width: target.width, height: target.height, filter, fit });
+      return;
+    }
+    case "crop": {
+      const current = await transformer.metadata(false, signal);
+      assertCrop(operation, current.width, current.height);
+      transformer.crop(operation.x, operation.y, operation.width, operation.height);
+      return;
+    }
+    case "rotate": {
+      const orientation = rotateOrientation(operation.angle);
+      if (orientation === undefined) {
+        throw new UnImageError("The napi driver only supports 90-degree rotations.", {
+          code: "UNIMAGE_UNSUPPORTED_OPERATION",
+          operation: "rotate",
+        });
+      }
+      transformer.rotate(orientation);
+      return;
+    }
+    case "flip":
+      transformer.rotate(
+        operation.axis === "horizontal" ? orientationMirrorHorizontal : orientationMirrorVertical,
+      );
+      return;
+    case "grayscale":
+      transformer.grayscale();
+      return;
+    case "invert":
+      transformer.invert();
+      return;
+    case "blur":
+      transformer.blur(operation.sigma);
+      return;
+    case "trim":
+    case "extend":
+    case "sharpen":
+    case "median":
+    case "dilate":
+    case "erode":
+    case "clahe":
+    case "flatten":
+    case "unflatten":
+    case "gamma":
+    case "normalize":
+    case "threshold":
+    case "linear":
+    case "modulate":
+    case "opacity":
+    case "tint": {
+      const current = await transformer.metadata(false, signal);
+      const raw = await transformer.rawPixels(signal);
+      const filtered = applyPixelFilter(
+        { data: new Uint8Array(raw), width: current.width, height: current.height },
+        operation,
+      );
+      return {
+        kind: undefined,
+        data: filtered.data,
+        width: filtered.width,
+        height: filtered.height,
+        layout: "rgba8",
+      } as RawImageData;
+    }
+  }
+  return;
+}
+
+async function encode(
+  transformer: NapiTransformer,
+  format: ImageFormat,
+  quality: number | undefined,
+  signal: AbortSignal | undefined,
+): Promise<Uint8Array> {
+  checkAborted(signal, "encode");
+
+  if (format === "png") return await transformer.png(undefined, signal);
+  if (format === "jpeg") return await transformer.jpeg(quality, signal);
+  if (format === "webp") return await transformer.webp(quality, signal);
+
+  if (format === "avif") {
+    try {
+      return quality === undefined
+        ? await transformer.avif(undefined, signal)
+        : await transformer.avif({ quality }, signal);
+    } catch (error) {
+      if (signal?.aborted) {
+        throw new UnImageError("Image encode was aborted.", {
+          code: "UNIMAGE_ABORT",
+          cause: error,
+        });
+      }
+      throw new UnImageError("The image could not be encoded as AVIF.", {
+        code: "UNIMAGE_ENCODE",
+        format,
+        cause: error,
+      });
+    }
+  }
+
+  throw new UnImageError("The image cannot be encoded as " + format + ".", {
+    code: "UNIMAGE_UNSUPPORTED_FORMAT",
+    format,
+  });
+}
+
+export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
+  return {
+    name: "napi",
+
+    capabilities(): Promise<ImageCapabilities> {
+      return Promise.resolve({
+        driver: "napi",
+        formats: {
+          png: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: false,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossless"],
+              quality: false,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          jpeg: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: true,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossy"],
+              quality: true,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          webp: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: true,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossy"],
+              quality: true,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          avif: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: true,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossy"],
+              quality: true,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          svg: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: false,
+              rasterDensity: false,
+              vector: true,
+            },
+            encode: {
+              compressionModes: [],
+              quality: false,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+        },
+        metadataRead: true,
+        operations: {
+          autoOrient: { supported: true },
+          resize: { supported: true },
+          crop: { supported: true },
+          rotate: {
+            supported: true,
+            notes: ["Only multiples of 90 degrees are supported."],
+          },
+          flip: { supported: true },
+          grayscale: { supported: true },
+          invert: { supported: true },
+          blur: { supported: true },
+          trim: { supported: true },
+          extend: { supported: true },
+          sharpen: { supported: true },
+          clahe: { supported: true },
+          median: { supported: true },
+          dilate: { supported: true },
+          erode: { supported: true },
+          flatten: { supported: true },
+          unflatten: { supported: true },
+          gamma: { supported: true },
+          normalize: { supported: true },
+          threshold: { supported: true },
+          linear: { supported: true },
+          modulate: { supported: true },
+          opacity: { supported: true },
+          tint: { supported: true },
+        },
+        notes: [
+          "Operations are applied in recipe order through isolated stages.",
+          "SVG input is rasterized with a transparent background before transforms.",
+          "Metadata preservation is not supported yet.",
+        ],
+      });
+    },
+
+    async decode(input: ImageInput, request: ImageDecodeRequest): Promise<RawImageFrame> {
+      if (request.rasterDensity !== undefined) {
+        throw new UnImageError("The napi driver does not support raster density.", {
+          code: "UNIMAGE_UNSUPPORTED_OPERATION",
+          operation: "rasterDensity",
+        });
+      }
+
+      const module = await loadModule(options);
+      const transformer = await createTransformer(module, input);
+      try {
+        const meta = normalizeMetadata(await transformer.metadata(false, request.signal));
+        const data = await transformer.rawPixels(request.signal);
+        return {
+          data,
+          width: meta.width,
+          height: meta.height,
+          layout: "rgba8",
+          metadata: {
+            ...(meta.format === undefined ? {} : { format: meta.format }),
+            mediaType:
+              mediaTypes[meta.format as keyof typeof mediaTypes] ?? "application/octet-stream",
+            width: meta.width,
+            height: meta.height,
+            byteLength: data.byteLength,
+            ...(meta.hasAlpha === undefined ? {} : { hasAlpha: meta.hasAlpha }),
+            ...(meta.orientation === undefined ? {} : { orientation: meta.orientation }),
+          },
+        };
+      } catch (error) {
+        if (error instanceof UnImageError) throw error;
+        if (request.signal?.aborted) {
+          throw new UnImageError("Image decode was aborted.", {
+            code: "UNIMAGE_ABORT",
+            cause: error,
+          });
+        }
+        throw new UnImageError("The image could not be decoded by napi-image.", {
+          code: "UNIMAGE_DECODE",
+          cause: error,
+        });
+      }
+    },
+
+    checkRecipe(recipe: ImagePipelineConfig): Promise<ImageCapabilityResult> {
+      const capabilities: ImageCapabilities = {
+        driver: this.name,
+        formats: {
+          png: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: false,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossless"],
+              quality: false,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          jpeg: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: true,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossy"],
+              quality: true,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          webp: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: true,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossy"],
+              quality: true,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          avif: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: true,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossy"],
+              quality: true,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          svg: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: false,
+              rasterDensity: false,
+              vector: true,
+            },
+            encode: {
+              compressionModes: [],
+              quality: false,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+        },
+        metadataRead: true,
+        operations: {
+          autoOrient: { supported: true },
+          resize: { supported: true },
+          crop: { supported: true },
+          rotate: {
+            supported: true,
+            notes: ["Only multiples of 90 degrees are supported."],
+          },
+          flip: { supported: true },
+          grayscale: { supported: true },
+          invert: { supported: true },
+          blur: { supported: true },
+          trim: { supported: true },
+          extend: { supported: true },
+          sharpen: { supported: true },
+          clahe: { supported: true },
+          median: { supported: true },
+          dilate: { supported: true },
+          erode: { supported: true },
+          flatten: { supported: true },
+          unflatten: { supported: true },
+          gamma: { supported: true },
+          normalize: { supported: true },
+          threshold: { supported: true },
+          linear: { supported: true },
+          modulate: { supported: true },
+          opacity: { supported: true },
+          tint: { supported: true },
+        },
+      };
+
+      return Promise.resolve(
+        checkRecipeCapabilities(recipe, capabilities, (operation) => {
+          const capability = capabilities.operations[operation.type];
+          if (operation.type === "rotate" && operation.angle % 90 !== 0) {
+            return {
+              supported: false,
+              notes: ["Napi-image rotation only supports 90 degree multiples."],
+            };
+          }
+          return capability ?? { supported: false };
+        }),
+      );
+    },
+
+    async metadata(input, context): Promise<ImageMetadata> {
+      if (isRawImage(input)) {
+        return normalizeMetadata(
+          {
+            width: input.width,
+            height: input.height,
+            format: "png",
+            colorType: 3,
+          },
+          input.data.byteLength,
+        );
+      }
+
+      if ((await sniffImageFormat(input)) === "svg") {
+        const svg = await decodeSvg(input);
+        const meta = parseSvgMetadata(svg, input instanceof Blob ? input.size : undefined);
+        return { ...meta, hasAlpha: true };
+      }
+
+      const module = await loadModule(options);
+      const transformer = await createTransformer(module, input);
+      try {
+        return normalizeMetadata(await transformer.metadata(false, context?.signal));
+      } catch (error) {
+        if (context?.signal?.aborted) {
+          throw new UnImageError("Image metadata was aborted.", {
+            code: "UNIMAGE_ABORT",
+            cause: error,
+          });
+        }
+        throw new UnImageError("Image metadata could not be read.", {
+          code: "UNIMAGE_DECODE",
+          cause: error,
+        });
+      }
+    },
+
+    async transform(input, recipe, context): Promise<ImageResult> {
+      if (recipe.input?.frames === "all" || recipe.input?.rasterDensity !== undefined) {
+        throw new UnImageError("The napi driver does not support this input option.", {
+          code: "UNIMAGE_UNSUPPORTED_OPERATION",
+          operation: "input",
+        });
+      }
+      if (recipe.output.metadataPolicy === "preserve") {
+        throw new UnImageError("The napi driver cannot preserve metadata yet.", {
+          code: "UNIMAGE_UNSUPPORTED_OPERATION",
+          operation: "metadata.preserve",
+        });
+      }
+
+      const module = await loadModule(options);
+      let state: ImageInput = input;
+      let finalMetadata: NapiImageMetadata | undefined;
+      if (recipe.operations.length === 0) {
+        const transformer = await createTransformer(module, state);
+        finalMetadata = await transformer.metadata(false, context?.signal);
+        state = await encode(
+          transformer,
+          recipe.output.format,
+          "quality" in recipe.output ? recipe.output.quality : undefined,
+          context?.signal,
+        );
+      }
+
+      for (const [index, operation] of recipe.operations.entries()) {
+        const transformer = await createTransformer(module, state);
+        let transformerToEncode = transformer;
+        try {
+          const nextState = await applyOperation(module, transformer, operation, context?.signal);
+          if (nextState) {
+            state = nextState;
+            transformerToEncode = await createTransformer(module, state);
+          }
+
+          if (index === recipe.operations.length - 1) {
+            finalMetadata = await transformerToEncode.metadata(false, context?.signal);
+          }
+        } catch (error) {
+          if (error instanceof UnImageError) throw error;
+          if (context?.signal?.aborted) {
+            throw new UnImageError("Image transform was aborted.", {
+              code: "UNIMAGE_ABORT",
+              cause: error,
+            });
+          }
+          throw new UnImageError(`The "${operation.type}" operation failed.`, {
+            code: "UNIMAGE_INVALID_RECIPE",
+            operation: operation.type,
+            cause: error,
+          });
+        }
+
+        state = await encode(
+          transformerToEncode,
+          index === recipe.operations.length - 1 ? recipe.output.format : "png",
+          index === recipe.operations.length - 1
+            ? "quality" in recipe.output
+              ? recipe.output.quality
+              : undefined
+            : undefined,
+          context?.signal,
+        );
+      }
+
+      if (isRawImage(state)) {
+        finalMetadata = {
+          width: state.width,
+          height: state.height,
+          format: "png",
+          colorType: 3,
+        };
+      }
+      const metadata = normalizeMetadata(
+        finalMetadata ?? {
+          width: 1,
+          height: 1,
+          format: recipe.output.format,
+          colorType: 3,
+        },
+        state instanceof Uint8Array ? state.byteLength : undefined,
+      );
+      metadata.format = recipe.output.format;
+      metadata.mediaType = mediaTypes[recipe.output.format];
+
+      return {
+        kind: "encoded",
+        data: state instanceof Uint8Array ? state : new Uint8Array(),
+        format: recipe.output.format,
+        mediaType: metadata.mediaType,
+        metadata,
+      };
+    },
+  };
+}

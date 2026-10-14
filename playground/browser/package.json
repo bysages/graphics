@@ -1,0 +1,19 @@
+{
+  "name": "@bysages/graphics-playground-browser",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vp dev --host 127.0.0.1 --port 5173 --strictPort",
+    "build": "vp build"
+  },
+  "dependencies": {
+    "@bysages/tokens": "0.4.3",
+    "@bysages/vue": "0.4.3",
+    "unimage": "workspace:*"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.10",
+    "vue": "3.5.43"
+  }
+}

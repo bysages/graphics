@@ -1,0 +1,46 @@
+{
+  "name": "@bysages/graphics-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "By Sages Graphics monorepo for unified, cross-runtime image and graphics tooling",
+  "keywords": [
+    "canvas",
+    "graphics",
+    "image",
+    "image-processing",
+    "typescript",
+    "unimage",
+    "webassembly"
+  ],
+  "homepage": "https://github.com/bysages/graphics#readme",
+  "bugs": {
+    "url": "https://github.com/bysages/graphics/issues"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "By Sages",
+    "email": "contact@bysages.com",
+    "url": "https://www.bysages.com/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bysages/graphics.git"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter \"./packages/*\" -r dev",
+    "build": "pnpm --filter \"./packages/*\" -r build",
+    "check": "vp check --fix",
+    "test": "vp test run",
+    "version": "pnpm --filter \"./packages/*\" -r exec basis version",
+    "postinstall": "pnpm build && vp config && basis git setup",
+    "release": "pnpm --filter \"./packages/*\" -r run release"
+  },
+  "devDependencies": {
+    "@funish/basis": "0.3.0",
+    "@types/node": "26.6.5",
+    "typescript": "6.0.3",
+    "vite-plus": "1.1.0"
+  },
+  "packageManager": "pnpm@10.34.6+sha512.7e1ae66a83a9143c118cc1944f37cc4f2b8acddeda4b001cfa78908f6e46e45e15292739ca6c9d026426cc757e8e46"
+}
