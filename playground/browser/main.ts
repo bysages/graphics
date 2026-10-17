@@ -4,11 +4,13 @@ import { createApp } from "vue";
 
 import App from "./App.vue";
 
+globalThis.Buffer ??= Buffer;
+
 applyTheme({
   mode: "system",
-  scene: "studio",
-  accent: "celadon",
-  density: "comfortable",
+  density: "default",
+  scene: "auto",
+  accent: "auto",
 });
 attachDynamicLight();
 attachInkRipple();

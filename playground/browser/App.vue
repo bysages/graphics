@@ -6,229 +6,204 @@
           <PageHeader>
             <PageHeader.Heading>
               <PageHeader.Eyebrow>Graphics</PageHeader.Eyebrow>
-              <PageHeader.Title>unimage browser playground</PageHeader.Title>
+              <PageHeader.Title>unimage playground</PageHeader.Title>
             </PageHeader.Heading>
             <PageHeader.Description>
-              Lens provides the source image; unimage performs decoding, operation composition, and
-              encoding locally in the browser.
+              Lens provides the source image; drivers process and encode it locally in the browser.
             </PageHeader.Description>
           </PageHeader>
 
-          <div class="layout">
-            <form class="sidebar" @submit.prevent="applySettings">
-              <Card.Root>
-                <Card.Header>
-                  <Card.Title>Source</Card.Title>
-                  <Card.Description>Choose a Lens URL or a local image.</Card.Description>
-                </Card.Header>
-                <Card.Content class="panel">
-                  <SegmentGroup
-                    :model-value="sourceMode"
-                    label="Source"
-                    :items="sourceItems"
-                    @update:model-value="setSourceMode"
-                  />
-
-                  <Field.Root v-if="sourceMode === `url`">
-                    <Field.Label>Image URL</Field.Label>
-                    <Input
-                      v-model="imageUrl"
-                      type="url"
-                      placeholder="https://images.unsplash.com/..."
-                    />
-                  </Field.Root>
-
-                  <FileUpload
-                    v-else
-                    label="Local image"
-                    placeholder="Choose image"
-                    :max-files="1"
-                    accept="image/*"
-                    :disabled="busy"
-                    @update:accepted-files="processLocalFiles"
-                  />
-
-                  <Button
-                    v-if="sourceMode === `url`"
-                    type="button"
-                    variant="outline"
-                    :disabled="busy"
-                    @click="processFromUrl"
-                  >
-                    Load URL
-                  </Button>
-                </Card.Content>
-              </Card.Root>
-
-              <Card.Root>
-                <Card.Header>
-                  <Card.Title>Operations</Card.Title>
-                  <Card.Description>
-                    Enabled operations are applied in the listed order.
-                  </Card.Description>
-                </Card.Header>
-                <Card.Content class="panel">
-                  <section class="operation-group">
-                    <Typography.Label>Geometry</Typography.Label>
-                    <Switch v-model="settings.autoOrient" label="Auto orient" :disabled="busy" />
-
-                    <div class="operation">
-                      <Switch v-model="settings.resizeEnabled" label="Resize" :disabled="busy" />
-                      <div v-if="settings.resizeEnabled" class="control-grid">
-                        <NumberInput
-                          v-model="settings.resizeWidth"
-                          label="Width"
-                          :min="1"
-                          :step="1"
-                          placeholder="Auto"
-                          :disabled="busy"
-                        />
-                        <NumberInput
-                          v-model="settings.resizeHeight"
-                          label="Height"
-                          :min="1"
-                          :step="1"
-                          placeholder="Auto"
-                          :disabled="busy"
-                        />
-                        <SegmentGroup
-                          :model-value="settings.resizeFit"
-                          label="Fit"
-                          :items="fitItems"
-                          :disabled="busy"
-                          @update:model-value="setResizeFit"
-                        />
-                        <Switch
-                          v-model="settings.withoutEnlargement"
-                          label="Without enlargement"
-                          :disabled="busy"
-                        />
-                      </div>
-                    </div>
-
-                    <div class="operation">
-                      <Switch v-model="settings.cropEnabled" label="Crop" :disabled="busy" />
-                      <div v-if="settings.cropEnabled" class="control-grid">
-                        <NumberInput
-                          v-model="settings.cropX"
-                          label="X"
-                          :min="0"
-                          :step="1"
-                          :disabled="busy"
-                        />
-                        <NumberInput
-                          v-model="settings.cropY"
-                          label="Y"
-                          :min="0"
-                          :step="1"
-                          :disabled="busy"
-                        />
-                        <NumberInput
-                          v-model="settings.cropWidth"
-                          label="Crop width"
-                          :min="1"
-                          :step="1"
-                          :disabled="busy"
-                        />
-                        <NumberInput
-                          v-model="settings.cropHeight"
-                          label="Crop height"
-                          :min="1"
-                          :step="1"
-                          :disabled="busy"
-                        />
-                      </div>
-                    </div>
-
-                    <div class="operation">
-                      <Switch v-model="settings.rotateEnabled" label="Rotate" :disabled="busy" />
-                      <NumberInput
-                        v-if="settings.rotateEnabled"
-                        v-model="settings.rotateAngle"
-                        label="Angle"
-                        :min="-360"
-                        :max="360"
-                        :step="1"
-                        :disabled="busy"
-                      />
-                    </div>
-
-                    <div class="operation">
-                      <Switch v-model="settings.flipEnabled" label="Flip" :disabled="busy" />
-                      <SegmentGroup
-                        v-if="settings.flipEnabled"
-                        :model-value="settings.flipAxis"
-                        label="Axis"
-                        :items="flipItems"
-                        :disabled="busy"
-                        @update:model-value="setFlipAxis"
-                      />
-                    </div>
-                  </section>
-
-                  <section class="operation-group">
-                    <Typography.Label>Color and blur</Typography.Label>
-                    <Switch v-model="settings.grayscale" label="Grayscale" :disabled="busy" />
-                    <Switch v-model="settings.invert" label="Invert" :disabled="busy" />
-                    <div class="operation">
-                      <Switch v-model="settings.blurEnabled" label="Blur" :disabled="busy" />
-                      <NumberInput
-                        v-if="settings.blurEnabled"
-                        v-model="settings.blurSigma"
-                        label="Sigma"
-                        :min="0"
-                        :step="0.1"
-                        :disabled="busy"
-                      />
-                    </div>
-                  </section>
-
-                  <section class="operation-group">
-                    <Typography.Label>Output</Typography.Label>
-                    <SegmentGroup
-                      v-model="format"
-                      label="Format"
-                      :items="formatItems"
-                      :disabled="busy"
-                    />
-                    <Slider
-                      v-model="quality"
-                      label="Quality"
-                      :min="1"
-                      :max="100"
-                      :step="1"
-                      :disabled="busy || !qualityEnabled"
-                    />
-                    <Button type="submit" :disabled="busy">
-                      {{ busy ? "Processing…" : "Apply settings" }}
-                    </Button>
-                  </section>
-                </Card.Content>
-              </Card.Root>
-            </form>
-
-            <Card.Root class="preview">
+          <form class="workspace" @submit.prevent="applySettings">
+            <Card.Root class="run-card">
               <Card.Header>
-                <Card.Title>Result preview</Card.Title>
-                <Card.Description>Processing stays on this device.</Card.Description>
+                <Card.Title>Run</Card.Title>
+                <Card.Description
+                  >Choose a source, driver, and output before applying.</Card.Description
+                >
+              </Card.Header>
+              <Card.Content class="panel">
+                <SegmentGroup
+                  :model-value="driverMode"
+                  label="Driver"
+                  :items="driverItems"
+                  @update:model-value="setDriverMode"
+                />
+
+                <SegmentGroup
+                  :model-value="sourceMode"
+                  label="Source"
+                  :items="sourceItems"
+                  @update:model-value="setSourceMode"
+                />
+
+                <Field.Root v-if="sourceMode === `url`">
+                  <Field.Label>Image URL</Field.Label>
+                  <Input
+                    v-model="imageUrl"
+                    type="url"
+                    placeholder="https://images.unsplash.com/..."
+                  />
+                </Field.Root>
+
+                <Button
+                  v-if="sourceMode === `url`"
+                  type="button"
+                  variant="outline"
+                  @click="processFromUrl"
+                >
+                  Load URL
+                </Button>
+
+                <FileUpload
+                  v-else
+                  label="Local image"
+                  placeholder="Choose image"
+                  :max-files="1"
+                  accept="image/*"
+                  @update:accepted-files="processLocalFiles"
+                />
+
+                <SegmentGroup v-model="format" label="Output format" :items="formatItems" />
+                <Slider
+                  v-model="quality"
+                  label="Quality"
+                  :min="1"
+                  :max="100"
+                  :step="1"
+                  :disabled="!qualityEnabled"
+                />
+
+                <Button type="button" size="lg" @click="applySettings">
+                  {{ busy ? "Processing…" : "Apply settings" }}
+                </Button>
+              </Card.Content>
+              <Card.Footer>
+                <Typography.Muted :class="{ error: isError }">{{ status }}</Typography.Muted>
+              </Card.Footer>
+            </Card.Root>
+
+            <Card.Root class="operations-card">
+              <Card.Header>
+                <Card.Title>Operations</Card.Title>
+                <Card.Description>Enabled operations run in the listed order.</Card.Description>
+              </Card.Header>
+              <Card.Content class="panel">
+                <section class="operation-group">
+                  <Typography.Label>Geometry</Typography.Label>
+                  <Switch v-model="settings.autoOrient" label="Auto orient" />
+
+                  <div class="operation">
+                    <Switch v-model="settings.resizeEnabled" label="Resize" />
+                    <div v-if="settings.resizeEnabled" class="control-grid">
+                      <NumberInput
+                        v-model="settings.resizeWidth"
+                        label="Width"
+                        :min="1"
+                        :step="1"
+                        placeholder="Auto"
+                      />
+                      <NumberInput
+                        v-model="settings.resizeHeight"
+                        label="Height"
+                        :min="1"
+                        :step="1"
+                        placeholder="Auto"
+                      />
+                      <SegmentGroup
+                        :model-value="settings.resizeFit"
+                        label="Fit"
+                        :items="fitItems"
+                        @update:model-value="setResizeFit"
+                      />
+                      <Switch v-model="settings.withoutEnlargement" label="Without enlargement" />
+                    </div>
+                  </div>
+
+                  <div class="operation">
+                    <Switch v-model="settings.cropEnabled" label="Crop" />
+                    <div v-if="settings.cropEnabled" class="control-grid">
+                      <NumberInput v-model="settings.cropX" label="X" :min="0" :step="1" />
+                      <NumberInput v-model="settings.cropY" label="Y" :min="0" :step="1" />
+                      <NumberInput
+                        v-model="settings.cropWidth"
+                        label="Crop width"
+                        :min="1"
+                        :step="1"
+                      />
+                      <NumberInput
+                        v-model="settings.cropHeight"
+                        label="Crop height"
+                        :min="1"
+                        :step="1"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="operation">
+                    <Switch v-model="settings.rotateEnabled" label="Rotate" />
+                    <NumberInput
+                      v-if="settings.rotateEnabled"
+                      v-model="settings.rotateAngle"
+                      label="Angle"
+                      :min="-360"
+                      :max="360"
+                      :step="1"
+                    />
+                  </div>
+
+                  <div class="operation">
+                    <Switch v-model="settings.flipEnabled" label="Flip" />
+                    <SegmentGroup
+                      v-if="settings.flipEnabled"
+                      :model-value="settings.flipAxis"
+                      label="Axis"
+                      :items="flipItems"
+                      @update:model-value="setFlipAxis"
+                    />
+                  </div>
+                </section>
+
+                <section class="operation-group">
+                  <Typography.Label>Color and blur</Typography.Label>
+                  <Switch v-model="settings.grayscale" label="Grayscale" />
+                  <Switch v-model="settings.invert" label="Invert" />
+                  <div class="operation">
+                    <Switch v-model="settings.blurEnabled" label="Blur" />
+                    <NumberInput
+                      v-if="settings.blurEnabled"
+                      v-model="settings.blurSigma"
+                      label="Sigma"
+                      :min="0"
+                      :step="0.1"
+                    />
+                  </div>
+                </section>
+              </Card.Content>
+            </Card.Root>
+
+            <Card.Root class="preview-card">
+              <Card.Header>
+                <Card.Title>Preview</Card.Title>
+                <Card.Description
+                  >Source and processed result stay on this device.</Card.Description
+                >
               </Card.Header>
               <Card.Content>
                 <div class="images">
                   <figure>
-                    <img :src="sourceUrl" alt="Original source" />
+                    <img v-if="sourceUrl" :src="sourceUrl" alt="Original source" />
+                    <div v-else class="image-placeholder" aria-hidden="true" />
                     <figcaption>{{ sourceInfo }}</figcaption>
                   </figure>
                   <figure>
-                    <img :src="resultUrl" alt="unimage result" />
+                    <img v-if="resultUrl" :src="resultUrl" alt="unimage result" />
+                    <div v-else class="image-placeholder" aria-hidden="true" />
                     <figcaption>{{ resultInfo }}</figcaption>
                   </figure>
                 </div>
-                <Typography.Muted class="status" :class="{ error: isError }">
-                  {{ status }}
-                </Typography.Muted>
               </Card.Content>
             </Card.Root>
-          </div>
+          </form>
         </Container>
       </div>
     </section>
@@ -253,11 +228,12 @@ import {
 import { createImageManager } from "unimage";
 import type { ImageOperation } from "unimage";
 import { canvasDriver } from "unimage/drivers/canvas";
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 
 const lensBase = "https://api.bysages.com";
 const defaultImage = "https://images.unsplash.com/photo-1506744038136-46273834b3fb";
 
+const driverMode = ref<"canvas" | "napi">("canvas");
 const sourceMode = ref<"url" | "file">("url");
 const imageUrl = ref(defaultImage);
 const format = ref<"png" | "jpeg" | "webp" | "avif">("webp");
@@ -265,7 +241,7 @@ const quality = ref(82);
 const qualityEnabled = computed(() => format.value !== "png" && format.value !== "gif");
 const busy = ref(false);
 const isError = ref(false);
-const status = ref("Preparing the first image…");
+const status = ref("Ready to load the first image.");
 const sourceUrl = ref("");
 const resultUrl = ref("");
 const sourceInfo = ref("No source loaded");
@@ -295,6 +271,10 @@ const settings = reactive({
   blurSigma: "2",
 });
 
+const driverItems = [
+  { value: "canvas", label: "Canvas" },
+  { value: "napi", label: "Napi WASI" },
+];
 const sourceItems = [
   { value: "url", label: "Lens URL" },
   { value: "file", label: "Local file" },
@@ -397,15 +377,92 @@ function buildOperations(): ImageOperation[] {
   return operations;
 }
 
+let napiWorker: Worker | undefined;
+let napiRequestId = 0;
+
+type NapiProcessed = {
+  data: Uint8Array;
+  mediaType: string;
+  metadata: { width: number; height: number; byteLength: number };
+};
+
+function napiEngine(): Worker {
+  napiWorker?.terminate();
+  napiWorker = new Worker(new URL("./napi.worker.ts", import.meta.url), {
+    type: "module",
+  });
+  return napiWorker;
+}
+
+function processWithNapi(
+  source: Blob,
+  operations: ImageOperation[],
+  output: { format: string; quality?: number },
+): Promise<NapiProcessed> {
+  const worker = napiEngine();
+  const id = ++napiRequestId;
+
+  return new Promise<NapiProcessed>((resolve, reject) => {
+    const cleanup = (): void => {
+      worker.removeEventListener("message", message);
+      worker.removeEventListener("messageerror", failure);
+      worker.removeEventListener("error", failure);
+    };
+    const message = (event: MessageEvent): void => {
+      const response = event.data as {
+        id?: number;
+        kind: "result" | "unsupported" | "error";
+        data?: ArrayBuffer;
+        mediaType?: string;
+        metadata?: NapiProcessed["metadata"];
+        message?: string;
+      };
+      if (response.id !== id) return;
+      cleanup();
+      if (response.kind === "result" && response.data && response.mediaType && response.metadata) {
+        resolve({
+          data: new Uint8Array(response.data),
+          mediaType: response.mediaType,
+          metadata: response.metadata,
+        });
+        return;
+      }
+      reject(new Error(response.message ?? "Napi WASI processing failed."));
+    };
+    const failure = (event: ErrorEvent): void => {
+      cleanup();
+      reject(new Error(event.message || "The Napi WASI worker failed to start."));
+    };
+    worker.addEventListener("message", message);
+    worker.addEventListener("messageerror", failure);
+    worker.addEventListener("error", failure);
+
+    void source.arrayBuffer().then((buffer) => {
+      worker.postMessage({ id, source: buffer, operations, output }, [buffer]);
+    });
+  });
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
-function setObjectUrl(current: string, blob: Blob): string {
-  if (current.startsWith("blob:")) URL.revokeObjectURL(current);
-  return URL.createObjectURL(blob);
+async function replaceImageUrl(reference: { value: string }, blob: Blob): Promise<void> {
+  const nextUrl = URL.createObjectURL(blob);
+  const image = new Image();
+  image.src = nextUrl;
+
+  try {
+    await image.decode();
+  } catch (error) {
+    URL.revokeObjectURL(nextUrl);
+    throw new Error("The image could not be displayed.", { cause: error });
+  }
+
+  if (reference.value.startsWith("blob:")) URL.revokeObjectURL(reference.value);
+  reference.value = nextUrl;
 }
 
 function showStatus(message: string, error = false): void {
@@ -413,6 +470,12 @@ function showStatus(message: string, error = false): void {
   isError.value = error;
 }
 
+function setDriverMode(value: string | null): void {
+  const mode = value === "napi" ? "napi" : "canvas";
+  if (driverMode.value === mode) return;
+  driverMode.value = mode;
+  showStatus(`${mode === "napi" ? "Napi WASI" : "Canvas"} selected. Apply settings to run.`);
+}
 function setSourceMode(value: string | null): void {
   sourceMode.value = value === "file" ? "file" : "url";
 }
@@ -439,45 +502,61 @@ async function process(source: Blob | null, sourceKind: "lens" | "local"): Promi
   if (busy.value) return;
   busy.value = true;
   const isFetch = sourceKind === "lens" && (!source || source.size === 0);
-  showStatus(isFetch ? "Fetching source…" : "Processing locally…");
+  const driverLabel = driverMode.value === "napi" ? "Napi WASI" : "Canvas";
+  let stage = isFetch ? "Fetching source" : "Preparing source";
 
   try {
+    showStatus(`${stage}…`);
     const operations = buildOperations();
     const sourceBlob = source && source.size > 0 ? source : await fetchSourceBlob();
-    const image = createImageManager({ driver: canvasDriver() });
     const output =
       format.value === "png" || format.value === "gif"
         ? { format: format.value, metadataPolicy: "strip" as const }
         : { format: format.value, quality: quality.value, metadataPolicy: "strip" as const };
-    const capability = await image.check({
-      output,
-      operations: [...new Set(operations.map((operation) => operation.type))],
-    });
-    if (!capability.supported) throw new Error(`This browser cannot run the selected pipeline.`);
 
     const startedAt = performance.now();
-    const processed = await image.transform(sourceBlob, {
-      operations,
-      output,
-    });
+    let processed;
+    if (driverMode.value === "napi") {
+      stage = "Processing with Napi WASI";
+      showStatus(`${stage}…`);
+      processed = await processWithNapi(sourceBlob, operations, output);
+    } else {
+      const image = createImageManager({ driver: canvasDriver() });
+      stage = `Checking ${driverLabel} support`;
+      showStatus(`${stage}…`);
+      const capability = await image.isConfigSupported({ output, operations });
+      if (!capability.supported) {
+        const missing = capability.missing
+          .map((issue) => `${issue.section}/${issue.key}`)
+          .join(", ");
+        throw new Error(`The selected pipeline is unsupported: ${missing}.`);
+      }
 
-    currentSource.value = sourceBlob;
+      stage = `Processing with ${driverLabel}`;
+      showStatus(`${stage}…`);
+      processed = await image.transform(sourceBlob, { operations, output });
+    }
+
     currentSourceKind.value = sourceKind;
-    sourceUrl.value = setObjectUrl(sourceUrl.value, sourceBlob);
-    resultUrl.value = setObjectUrl(
-      resultUrl.value,
+    if (currentSource.value !== sourceBlob) {
+      currentSource.value = sourceBlob;
+      await replaceImageUrl(sourceUrl, sourceBlob);
+    }
+    await replaceImageUrl(
+      resultUrl,
       new Blob([processed.data.slice().buffer as ArrayBuffer], { type: processed.mediaType }),
     );
     sourceInfo.value =
       `${sourceKind === "lens" ? "Lens source" : "Local source"} · ` +
       `${formatBytes(sourceBlob.size)}`;
     resultInfo.value =
-      `unimage ${processed.metadata.width}×${processed.metadata.height} · ` +
+      `unimage · ${driverLabel} · ${processed.metadata.width}×${processed.metadata.height} · ` +
       `${format.value.toUpperCase()} · ${formatBytes(processed.data.byteLength)} · ` +
       `${Math.round(performance.now() - startedAt)}ms`;
     showStatus("Done.");
   } catch (error) {
-    showStatus(error instanceof Error ? error.message : "Processing failed.", true);
+    const reason = error instanceof Error ? error.message : "Unknown error";
+    showStatus(`${stage} failed: ${reason}`, true);
   } finally {
     busy.value = false;
   }
@@ -489,7 +568,6 @@ function processLocalFiles(files: File[]): void {
 }
 
 function processFromUrl(): void {
-  currentSource.value = null;
   void process(null, "lens");
 }
 
@@ -499,7 +577,6 @@ function applySettings(): void {
 
 onMounted(() => void process(null, "lens"));
 </script>
-
 <style>
 body {
   margin: 0;
@@ -507,7 +584,7 @@ body {
 
 .page {
   min-height: 100dvh;
-  padding-block: var(--bs-space-12) var(--bs-space-16);
+  padding-block: var(--bs-space-10) var(--bs-space-16);
   background: var(--bs-color-surface-0);
   color: var(--bs-color-text-primary);
 }
@@ -521,22 +598,36 @@ body {
   margin-inline: auto;
 }
 
-.layout {
+.workspace {
   display: grid;
-  grid-template-columns: minmax(320px, 400px) minmax(0, 1fr);
-  gap: var(--bs-gap-xl);
+  grid-template-columns: minmax(300px, 360px) minmax(320px, 400px) minmax(0, 1fr);
+  grid-template-areas: "operations run preview";
+  gap: var(--bs-gap-lg);
   align-items: start;
   margin-block-start: var(--bs-margin-2xl);
 }
 
-.sidebar {
-  display: grid;
-  gap: var(--bs-gap-lg);
+.run-card {
+  grid-area: run;
+  position: sticky;
+  top: var(--bs-space-6);
+}
+
+.operations-card {
+  grid-area: operations;
+  position: sticky;
+  top: var(--bs-space-6);
+  max-height: calc(100dvh - var(--bs-space-12));
+  overflow: auto;
+}
+
+.preview-card {
+  grid-area: preview;
 }
 
 .panel {
   display: grid;
-  gap: var(--bs-gap-lg);
+  gap: var(--bs-gap-md);
 }
 
 .operation-group {
@@ -562,10 +653,6 @@ body {
   grid-column: 1 / -1;
 }
 
-.control-grid > [data-scope="segment-group"] {
-  inline-size: 100%;
-}
-
 .control-grid > [data-scope="segment-group"] > [data-part="item"] {
   flex: 1 1 0;
   justify-content: center;
@@ -583,10 +670,11 @@ figure {
   margin: 0;
 }
 
-img {
+img,
+.image-placeholder {
   display: block;
   inline-size: 100%;
-  max-block-size: 52vh;
+  aspect-ratio: 4 / 3;
   border-radius: var(--bs-radius-sm);
   background: var(--bs-color-surface-inset);
   object-fit: contain;
@@ -598,18 +686,32 @@ figcaption {
   font-size: var(--bs-font-size-sm);
 }
 
-.status {
-  margin-block-start: var(--bs-gap-lg);
-}
-
 .error {
   color: var(--bs-color-danger);
 }
 
-@container page (max-width: 900px) {
-  .layout,
+@container page (max-width: 1280px) {
+  .workspace {
+    grid-template-columns: minmax(280px, 340px) minmax(300px, 400px);
+    grid-template-areas:
+      "operations run"
+      "preview preview";
+  }
+}
+
+@container page (max-width: 960px) {
+  .workspace,
   .images {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "run"
+      "operations"
+      "preview";
+  }
+
+  .run-card,
+  .operations-card {
+    position: static;
   }
 }
 

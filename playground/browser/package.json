@@ -10,6 +10,8 @@
   "dependencies": {
     "@bysages/tokens": "0.4.3",
     "@bysages/vue": "0.4.3",
+    "@napi-rs/image-wasm32-wasi": "1.15.0",
+    "buffer": "6.0.3",
     "unimage": "workspace:*"
   },
   "devDependencies": {
