@@ -2,7 +2,7 @@ import type { Driver, Storage } from "unstorage";
 
 import type { ProxyStorage, ProxyStorageMeta, ProxyStorageOptions } from "./types";
 
-export interface UnstorageStorageOptions {
+export interface UnstorageAdapterOptions {
   /**
    * Optional prefix placed in front of every key, useful to namespace a
    * shared storage instance.
@@ -16,9 +16,9 @@ export interface UnstorageStorageOptions {
  * This is type-only integration: unstorage itself is not a runtime dependency,
  * the passed instance is used as-is.
  */
-export function unstorageStorage(
+export function fromUnstorage(
   storage: Storage | Driver,
-  options: UnstorageStorageOptions | string = {},
+  options: UnstorageAdapterOptions | string = {},
 ): ProxyStorage {
   const resolved = typeof options === "string" ? { prefix: options } : options;
   const resolveKey = (id: string) => (resolved.prefix ? `${resolved.prefix}:${id}` : id);
@@ -44,12 +44,12 @@ export function unstorageStorage(
   };
 }
 
-export type StorageInput = ProxyStorage | Storage | Driver;
+export type ProxyStorageInput = ProxyStorage | Storage | Driver;
 
 /**
- * Accept an ProxyStorage as-is, or adapt an unstorage instance / bare driver.
+ * Accept a ProxyStorage as-is, or adapt an unstorage instance / bare driver.
  */
-export function normalizeStorage(input: StorageInput): ProxyStorage {
+export function normalizeStorage(input: ProxyStorageInput): ProxyStorage {
   if (typeof (input as ProxyStorage).getData === "function") return input as ProxyStorage;
-  return unstorageStorage(input as Storage | Driver);
+  return fromUnstorage(input as Storage | Driver);
 }

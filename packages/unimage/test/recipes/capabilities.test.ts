@@ -5,7 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { napiDriver } from "../../src/drivers/napi";
 import { createImageProxy } from "../../src/proxy";
 import { parseImageRecipe } from "../../src/recipe";
-import { unstorageStorage } from "../../src/storage/unstorage";
+import { fromUnstorage } from "../../src/storage/unstorage";
 import type { ImageRecipe, RawImageData } from "../../src/types";
 
 const raw: RawImageData = {
@@ -95,7 +95,7 @@ describe("new pixel capabilities", () => {
     const memory = createStorage({ driver: memoryDriver() });
     await memory.setItemRaw("/test.png", encoded.data);
     const proxy = createImageProxy({
-      storage: unstorageStorage(memory),
+      storage: fromUnstorage(memory),
     });
     const result = proxy("test.png", {
       clahe: "8_8_3",

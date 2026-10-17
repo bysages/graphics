@@ -9,7 +9,7 @@ import {
   parseImageProxyURL,
 } from "../../src/server";
 import { httpDriver } from "../../src/storage/http";
-import { unstorageStorage } from "../../src/storage/unstorage";
+import { fromUnstorage } from "../../src/storage/unstorage";
 import type { ImageCapabilities, ImageDriver, ImageRecipe } from "../../src/types";
 
 function createDriver(): ImageDriver {
@@ -82,7 +82,7 @@ function createDriver(): ImageDriver {
 
 const memory = createStorage({ driver: memoryDriver() });
 await memory.setItemRaw("/source.png", new Uint8Array([8, 8, 8, 8]));
-const storage = unstorageStorage(memory);
+const storage = fromUnstorage(memory);
 
 describe("parseImageProxyURL", () => {
   it("parses ImageProxy-compatible modifier and identifier segments", () => {

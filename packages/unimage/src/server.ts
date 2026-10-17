@@ -143,7 +143,7 @@ export {
 } from "./proxy";
 export { fsDriver, type FSStorageOptions } from "./storage/fs";
 export { httpDriver, type HTTPStorageOptions } from "./storage/http";
-export { unstorageStorage, type UnstorageStorageOptions } from "./storage/unstorage";
+export { fromUnstorage, type UnstorageAdapterOptions } from "./storage/unstorage";
 export type { ProxyStorage, ProxyStorageMeta } from "./storage/types";
 
 function toHTTPError(error: unknown): unknown {

@@ -6,7 +6,7 @@ import { sharpDriver } from "./drivers/sharp";
 import { svgoDriver, type SvgoDriverOptions } from "./drivers/svgo";
 import { createImageManager } from "./manager";
 import type { ProxyStorage } from "./storage/types";
-import { normalizeStorage, type StorageInput } from "./storage/unstorage";
+import { normalizeStorage, type ProxyStorageInput } from "./storage/unstorage";
 import type { FitMode, ImageFormat, ImageMetadata, ImageOperation, ImageManager } from "./types";
 import { normalizeMaxAge } from "./utils/cache";
 
@@ -128,8 +128,8 @@ export interface ImageProxyOptions {
   maxAge?: number;
   maxOutputDimension?: number | false;
   alias?: Record<string, string>;
-  storage: StorageInput;
-  httpStorage?: StorageInput;
+  storage: ProxyStorageInput;
+  httpStorage?: ProxyStorageInput;
 }
 
 export interface ImageProxyRequestOptions {

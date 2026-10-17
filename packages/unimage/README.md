@@ -133,15 +133,15 @@ Storage adapters delegate raw IO to unstorage:
 
 - `fsDriver({ dir })` — read-only filesystem storage on `unstorage/drivers/fs-lite`, plus a symlink-escape guard
 - `httpDriver({ domains, blockPrivateIPs })` — remote storage with SSRF guardrails and per-hop redirect validation
-- `unstorageStorage(storageOrDriver)` — adapt any unstorage instance or bare driver; `createImageProxy` also accepts one directly
+- `fromUnstorage(storageOrDriver)` — adapt any unstorage instance or bare driver; `createImageProxy` also accepts one directly
 
 ```ts
-import { createImageProxy, unstorageStorage } from "unimage/server";
+import { createImageProxy, fromUnstorage } from "unimage/server";
 import { createStorage } from "unstorage";
 import memoryDriver from "unstorage/drivers/memory";
 
 const proxy = createImageProxy({
-  storage: unstorageStorage(createStorage({ driver: memoryDriver() }), { prefix: "assets" }),
+  storage: fromUnstorage(createStorage({ driver: memoryDriver() }), { prefix: "assets" }),
 });
 ```
 

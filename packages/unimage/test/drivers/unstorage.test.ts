@@ -3,7 +3,7 @@ import memoryDriver from "unstorage/drivers/memory";
 import { describe, expect, it } from "vite-plus/test";
 
 import { createImageProxy } from "../../src/proxy";
-import { unstorageStorage } from "../../src/storage/unstorage";
+import { fromUnstorage } from "../../src/storage/unstorage";
 import type { ImageCapabilities, ImageDriver, ImageRecipe } from "../../src/types";
 
 function createDriver(): ImageDriver {
@@ -70,14 +70,14 @@ function createDriver(): ImageDriver {
   };
 }
 
-describe("unstorageStorage", () => {
+describe("fromUnstorage", () => {
   it("adapts a real unstorage instance for ImageProxy", async () => {
     const storage = createStorage({ driver: memoryDriver() });
     await storage.setItemRaw("/images/source.png", new Uint8Array([1, 2, 3]));
 
     const proxy = createImageProxy({
       driver: createDriver(),
-      storage: unstorageStorage(storage),
+      storage: fromUnstorage(storage),
     });
     const result = await proxy("images/source.png").process();
     expect(result.data).toEqual(new Uint8Array([9, 9, 9]));
@@ -93,7 +93,7 @@ describe("unstorageStorage", () => {
       name: "bare",
       getItemRaw: async () => new Uint8Array([4, 5, 6]),
     };
-    const adapted = unstorageStorage(bare as unknown as Driver);
+    const adapted = fromUnstorage(bare as unknown as Driver);
     await expect(adapted.getMeta("source.png")).resolves.toEqual({});
 
     const proxy = createImageProxy({ driver: createDriver(), storage: adapted });
@@ -105,7 +105,7 @@ describe("unstorageStorage", () => {
   it("supports key prefixing", async () => {
     const storage = createStorage({ driver: memoryDriver() });
     await storage.setItemRaw("cdn:images/x.png", new Uint8Array([4]));
-    const adapted = unstorageStorage(storage, { prefix: "cdn" });
+    const adapted = fromUnstorage(storage, { prefix: "cdn" });
     expect(await adapted.getData("images/x.png")).toEqual(new Uint8Array([4]));
   });
 });
