@@ -724,80 +724,88 @@ function unavailableCapabilities(driverName: string): ImageCapabilities {
 
 export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
   const resolveCanvas = createCanvasResolver(options.canvasImport);
+  let capabilitiesPromise: Promise<ImageCapabilities> | undefined;
 
+  const detectCapabilities = async (): Promise<ImageCapabilities> => {
+    canvasModule = await resolveCanvas();
+    if (canvasModule === undefined && !browserAvailable()) {
+      return unavailableCapabilities("canvas");
+    }
+
+    const formats: Partial<ImageCapabilities["formats"]> = {};
+    const surface = createSurface(1, 1);
+    surfaceContext(surface).fillRect(0, 0, 1, 1);
+    for (const format of ["png", "jpeg", "webp", "avif", "gif"] as const) {
+      try {
+        const blob = await surfaceToBlob(surface, format, 80);
+        if (blob.type !== mediaTypes[format]) continue;
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        if ((await sniffImageFormat(bytes)) !== format) continue;
+        formats[format] = {
+          decode: {
+            pixelFormats: ["rgba8"],
+            frames: ["still"],
+            orientation: canvasModule === undefined && format === "jpeg",
+            rasterDensity: false,
+            vector: false,
+          },
+          encode: {
+            compressionModes: format === "png" || format === "gif" ? ["lossless"] : ["lossy"],
+            quality: format !== "png" && format !== "gif",
+            animation: false,
+            metadataPolicies: ["strip"],
+            sanitize: false,
+          },
+        };
+      } catch {
+        // Unsupported browsers are intentionally omitted from the capability matrix.
+      }
+    }
+
+    return {
+      driver: "canvas",
+      formats,
+      metadataRead: true,
+      operations: {
+        ...(Object.fromEntries(
+          canvasOperationNames.map((operation) => [operation, { supported: true }]),
+        ) as ImageCapabilities["operations"]),
+        composite: {
+          supported: true,
+          notes: [
+            "Canvas2D compositing; add maps to lighter and saturate uses the RGBA pipeline.",
+            "Translucent layers with separable blends follow straight-alpha Canvas behavior.",
+          ],
+        },
+        autoOrient: {
+          supported: canvasModule === undefined,
+          ...(canvasModule === undefined
+            ? {}
+            : { notes: ["Canvas image decoding does not apply EXIF orientation."] }),
+        },
+        blur: {
+          supported: true,
+          notes: ["Uses Canvas2D filter support; results may vary slightly between browsers."],
+        },
+      },
+      notes: [
+        "Canvas encoders strip incidental metadata.",
+        "Capability detection is performed with a 1x1 canvas.",
+        ...(canvasModule === undefined
+          ? []
+          : ["Node backend runs on @napi-rs/canvas; EXIF auto-orientation is ignored."]),
+      ],
+    };
+  };
   return {
     name: "canvas",
 
     async capabilities(): Promise<ImageCapabilities> {
-      canvasModule = await resolveCanvas();
-      if (canvasModule === undefined && !browserAvailable()) {
-        return unavailableCapabilities("canvas");
-      }
-
-      const formats: Partial<ImageCapabilities["formats"]> = {};
-      const surface = createSurface(1, 1);
-      surfaceContext(surface).fillRect(0, 0, 1, 1);
-      for (const format of ["png", "jpeg", "webp", "avif", "gif"] as const) {
-        try {
-          const blob = await surfaceToBlob(surface, format, 80);
-          if (blob.type !== mediaTypes[format]) continue;
-          const bytes = new Uint8Array(await blob.arrayBuffer());
-          if ((await sniffImageFormat(bytes)) !== format) continue;
-          formats[format] = {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: canvasModule === undefined && format === "jpeg",
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: format === "png" || format === "gif" ? ["lossless"] : ["lossy"],
-              quality: format !== "png" && format !== "gif",
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          };
-        } catch {
-          // Unsupported browsers are intentionally omitted from the capability matrix.
-        }
-      }
-
-      return {
-        driver: "canvas",
-        formats,
-        metadataRead: true,
-        operations: {
-          ...(Object.fromEntries(
-            canvasOperationNames.map((operation) => [operation, { supported: true }]),
-          ) as ImageCapabilities["operations"]),
-          composite: {
-            supported: true,
-            notes: [
-              "Canvas2D compositing; add maps to lighter and saturate uses the RGBA pipeline.",
-              "Translucent layers with separable blends follow straight-alpha Canvas behavior.",
-            ],
-          },
-          autoOrient: {
-            supported: canvasModule === undefined,
-            ...(canvasModule === undefined
-              ? {}
-              : { notes: ["Canvas image decoding does not apply EXIF orientation."] }),
-          },
-          blur: {
-            supported: true,
-            notes: ["Uses Canvas2D filter support; results may vary slightly between browsers."],
-          },
-        },
-        notes: [
-          "Canvas encoders strip incidental metadata.",
-          "Capability detection is performed with a 1x1 canvas.",
-          ...(canvasModule === undefined
-            ? []
-            : ["Node backend runs on @napi-rs/canvas; EXIF auto-orientation is ignored."]),
-        ],
-      };
+      capabilitiesPromise ??= detectCapabilities().catch((error: unknown) => {
+        capabilitiesPromise = undefined;
+        throw error;
+      });
+      return capabilitiesPromise;
     },
 
     async checkRecipe(recipe: ImagePipelineConfig): Promise<ImageCapabilityResult> {
