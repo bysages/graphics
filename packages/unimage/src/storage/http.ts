@@ -1,4 +1,12 @@
 import { HTTPError } from "h3";
+import {
+  getIPVersion,
+  ipInRange,
+  isLoopbackIPv4,
+  isLoopbackIPv6,
+  isPrivateIPv4,
+  isPrivateIPv6,
+} from "ipdo";
 import { defineDriver, type Driver } from "unstorage";
 
 import { UnImageError } from "../errors";
@@ -21,116 +29,59 @@ const redirectStatuses = new Set([301, 302, 303, 307, 308]);
 const maxRedirects = 3;
 
 type DnsModule = typeof import("node:dns/promises");
-type NetModule = typeof import("node:net");
 
-function ipv4ToNumber(address: string): number | undefined {
-  const parts = address.split(".");
-  if (parts.length !== 4) return undefined;
-  let value = 0;
-  for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) return undefined;
-    const byte = Number(part);
-    if (byte > 255) return undefined;
-    value = value * 256 + byte;
-  }
-  return value;
-}
+const reservedIPv4Ranges = [
+  "0.0.0.0/8",
+  "10.0.0.0/8",
+  "100.64.0.0/10",
+  "127.0.0.0/8",
+  "169.254.0.0/16",
+  "172.16.0.0/12",
+  "192.0.0.0/24",
+  "192.0.2.0/24",
+  "192.168.0.0/16",
+  "198.18.0.0/15",
+  "198.51.100.0/24",
+  "203.0.113.0/24",
+  "224.0.0.0/4",
+  "240.0.0.0/4",
+];
 
-function inIPv4Cidr(address: string, cidr: string): boolean {
-  const value = ipv4ToNumber(address);
-  const [network, prefix] = cidr.split("/");
-  const bits = Number(prefix);
-  if (value === undefined || network === undefined || !Number.isInteger(bits)) return false;
-  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-  const networkValue = ipv4ToNumber(network);
-  return networkValue !== undefined && (value & mask) === (networkValue & mask);
-}
+const reservedIPv6Ranges = [
+  "::/128",
+  "64:ff9b::/96",
+  "fc00::/7",
+  "fe80::/10",
+  "ff00::/8",
+  "2001:db8::/32",
+  "2002::/16",
+];
 
-function parseIPv6(address: string): bigint | undefined {
-  const [body = "", zone = ""] = address.split("%");
-  if (zone !== "" || body === "") return undefined;
-  const separator = body.indexOf("::");
-  if (separator !== -1 && separator !== body.lastIndexOf("::")) return undefined;
-  const sides = separator === -1 ? [body] : [body.slice(0, separator), body.slice(separator + 2)];
-  const groups: number[] = [];
-  for (const [index, side] of sides.entries()) {
-    if (side === "") {
-      if (index === 1 && separator === body.length - 2) groups.push(0);
-      continue;
-    }
-    for (const group of side.split(":")) {
-      if (group.includes(".")) {
-        const ipv4 = ipv4ToNumber(group);
-        if (ipv4 === undefined) return undefined;
-        groups.push(Math.floor(ipv4 / 0x10000), ipv4 % 0x10000);
-        continue;
-      }
-      if (!/^[0-9a-f]{1,4}$/i.test(group)) return undefined;
-      groups.push(Number.parseInt(group, 16));
-    }
-  }
-  if (separator !== -1) {
-    const missing = 8 - groups.length;
-    if (missing < 1) return undefined;
-    groups.splice(
-      sides[0] === "" ? 0 : groups.length,
-      0,
-      ...Array.from({ length: missing }, () => 0),
-    );
-  }
-  if (groups.length !== 8) return undefined;
-  return groups.reduce((value, group) => (value << 16n) | BigInt(group), 0n);
-}
-
-function inIPv6Cidr(address: bigint, network: string): boolean {
-  const [networkAddress = "", prefixText = ""] = network.split("/");
-  const prefix = Number(prefixText);
-  const networkValue = parseIPv6(networkAddress);
-  if (!Number.isInteger(prefix) || prefix < 0 || prefix > 128 || networkValue === undefined) {
-    return false;
-  }
-  const mask = prefix === 0 ? 0n : ((1n << BigInt(prefix)) - 1n) << BigInt(128 - prefix);
-  return (address & mask) === (networkValue & mask);
-}
-
-function isPrivateIP(address: string): boolean {
+function isReservedIP(address: string): boolean {
   if (address === "localhost") return true;
-  if (address.includes(":")) {
-    const value = parseIPv6(address.toLowerCase());
-    if (value === undefined) return true;
-    const mapped = value & 0xffffffffn;
-    if (value >> 32n === 0xffffn) {
-      const ipv4 = mapped.toString();
-      return isPrivateIP(ipv4);
-    }
+
+  const version = getIPVersion(address);
+  if (version === 4) {
     return (
-      value === 0n ||
-      value === 1n ||
-      inIPv6Cidr(value, "fc00::/7") ||
-      inIPv6Cidr(value, "fe80::/10") ||
-      inIPv6Cidr(value, "ff00::/8") ||
-      inIPv6Cidr(value, "::ffff:0:0/96") ||
-      inIPv6Cidr(value, "64:ff9b::/96") ||
-      inIPv6Cidr(value, "2001:db8::/32") ||
-      inIPv6Cidr(value, "2002::/16")
+      isPrivateIPv4(address) ||
+      isLoopbackIPv4(address) ||
+      reservedIPv4Ranges.some((range) => ipInRange(range, address))
     );
   }
-  return (
-    inIPv4Cidr(address, "0.0.0.0/8") ||
-    inIPv4Cidr(address, "10.0.0.0/8") ||
-    inIPv4Cidr(address, "100.64.0.0/10") ||
-    inIPv4Cidr(address, "127.0.0.0/8") ||
-    inIPv4Cidr(address, "169.254.0.0/16") ||
-    inIPv4Cidr(address, "172.16.0.0/12") ||
-    inIPv4Cidr(address, "192.0.0.0/24") ||
-    inIPv4Cidr(address, "192.0.2.0/24") ||
-    inIPv4Cidr(address, "192.168.0.0/16") ||
-    inIPv4Cidr(address, "198.18.0.0/15") ||
-    inIPv4Cidr(address, "198.51.100.0/24") ||
-    inIPv4Cidr(address, "203.0.113.0/24") ||
-    inIPv4Cidr(address, "224.0.0.0/4") ||
-    inIPv4Cidr(address, "240.0.0.0/4")
-  );
+
+  if (version === 6) {
+    const mapped = address.toLowerCase().match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+    if (mapped) return isReservedIP(mapped[1]!);
+    const nat64 = address.toLowerCase().match(/^64:ff9b::(\d{1,3}(?:\.\d{1,3}){3})$/);
+    if (nat64) return isReservedIP(nat64[1]!);
+    return (
+      isLoopbackIPv6(address) ||
+      isPrivateIPv6(address) ||
+      reservedIPv6Ranges.some((range) => ipInRange(range, address))
+    );
+  }
+
+  return false;
 }
 
 function forbiddenIP(hostname: string): HTTPError {
@@ -142,12 +93,9 @@ function forbiddenIP(hostname: string): HTTPError {
 }
 
 async function assertSafeAddress(hostname: string): Promise<void> {
-  const [{ lookup }, { isIP }] = await Promise.all([
-    import("node:dns/promises") as Promise<DnsModule>,
-    import("node:net") as Promise<NetModule>,
-  ]);
-  if (isIP(hostname) !== 0) {
-    if (isPrivateIP(hostname)) throw forbiddenIP(hostname);
+  const { lookup } = (await import("node:dns/promises")) as DnsModule;
+  if (getIPVersion(hostname) !== null) {
+    if (isReservedIP(hostname)) throw forbiddenIP(hostname);
     return;
   }
 
@@ -163,7 +111,7 @@ async function assertSafeAddress(hostname: string): Promise<void> {
     });
   }
   if (addresses.length === 0) throw forbiddenIP(hostname);
-  const reserved = addresses.find((entry) => isPrivateIP(entry.address));
+  const reserved = addresses.find((entry) => isReservedIP(entry.address));
   if (reserved !== undefined) throw forbiddenIP(`${hostname} (${reserved.address})`);
 }
 
@@ -227,7 +175,7 @@ export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => 
         import("node:http") as Promise<typeof import("node:http")>,
         import("node:https") as Promise<typeof import("node:https")>,
         import("node:dns/promises") as Promise<DnsModule>,
-        import("node:net") as Promise<NetModule>,
+        import("node:net"),
       ]);
 
     let addresses: readonly { address: string; family: number }[];
@@ -282,7 +230,7 @@ export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => 
         return;
       }
       signal?.addEventListener("abort", abort, { once: true });
-      request.on("error", (error) => {
+      request.on("error", (error: Error) => {
         signal?.removeEventListener("abort", abort);
         reject(error);
       });
@@ -297,7 +245,7 @@ export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => 
             if (Array.isArray(value)) {
               for (const item of value) responseHeaders.append(name, item);
             } else if (value !== undefined) {
-              responseHeaders.set(name, value);
+              responseHeaders.set(name, String(value));
             }
           }
           resolve(
@@ -311,7 +259,7 @@ export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => 
             ),
           );
         });
-        response.on("error", (error) => {
+        response.on("error", (error: Error) => {
           signal?.removeEventListener("abort", abort);
           reject(error);
         });

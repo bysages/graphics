@@ -29,6 +29,9 @@ importers:
       h3:
         specifier: 2.0.2
         version: 2.0.2
+      ipdo:
+        specifier: 0.0.6
+        version: 0.0.6
       unpalette:
         specifier: workspace:*
         version: link:../unpalette
@@ -1822,6 +1825,9 @@ packages:
   import-without-cache@0.4.1:
     resolution: {integrity: sha512-vXoV9PjKHEednCUu01e98TkImxy67e3BJXbTIOmIq4Hyzw3IAwYRcuPkfeTzJzwyyts4kjuA73x+pWJLc4f86A==}
     engines: {node: ^22.18.0 || >=24.0.0}
+
+  ipdo@0.0.6:
+    resolution: {integrity: sha512-R9ZDWatudDkd4kXSY3971HxEJoqJB4COBWKQaWM9JCzWm5JFeik5ooCy8WHtoIvoAWSOENweSqaER2pK/t1Usw==}
 
   iron-webcrypto@1.2.1:
     resolution: {integrity: sha512-feOM6FaSr6rEABp/eDfVseKyTMDt+KGpeB35SkVn9Tyn0CqvVsY3EwI0v5i8nMHyJnzCIQf7nsy3p41TPkJZhg==}
@@ -4267,6 +4273,8 @@ snapshots:
   human-signals@8.0.1: {}
 
   import-without-cache@0.4.1: {}
+
+  ipdo@0.0.6: {}
 
   iron-webcrypto@1.2.1: {}
 

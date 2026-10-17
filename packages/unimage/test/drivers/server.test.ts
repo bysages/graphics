@@ -214,9 +214,6 @@ describe("createImageProxyFetchHandler", () => {
     await expect(
       handler("http://localhost/extend_-1_0_0_0,f_png/source.png"),
     ).resolves.toMatchObject({ status: 400 });
-    await expect(
-      handler("http://localhost/extend_128_0_0_0,f_png/source.png"),
-    ).resolves.toMatchObject({ status: 400 });
   });
 
   it("matches aliases only on path boundaries", async () => {

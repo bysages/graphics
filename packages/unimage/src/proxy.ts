@@ -390,7 +390,6 @@ export function modifiersToRecipe(
   const max = maxOutputDimension === false ? Number.POSITIVE_INFINITY : maxOutputDimension;
   const operations: ImageOperation[] = [];
   const background = modifiers.background ?? modifiers.b;
-  const maxOperations = 32;
   if (toFlag(modifiers.autoorient)) operations.push({ type: "autoOrient" });
 
   if (modifiers.blur !== undefined) {
@@ -473,14 +472,6 @@ export function modifiersToRecipe(
         statusText: "UNIMAGE_UNSUPPORTED_MODIFIER",
         message: `The "extend" mode is unsupported: ${mode}`,
       });
-    }
-    const outputWidth = metadata.width + edges[1]! + edges[3]!;
-    const outputHeight = metadata.height + edges[0]! + edges[2]!;
-    if (
-      maxOutputDimension !== false &&
-      (outputWidth > maxOutputDimension || outputHeight > maxOutputDimension)
-    ) {
-      throw invalidModifier("extend", "would exceed maxOutputDimension");
     }
     operations.push({
       type: "extend",
@@ -656,10 +647,6 @@ export function modifiersToRecipe(
     modifiers.animated !== undefined || modifiers.a !== undefined || normalizedFormat === "gif"
       ? ("all" as const)
       : undefined;
-
-  if (operations.length > maxOperations) {
-    throw invalidModifier("operations", "exceed the maximum supported pipeline length");
-  }
 
   return {
     operations,

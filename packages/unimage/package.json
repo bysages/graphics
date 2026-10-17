@@ -62,6 +62,7 @@
   },
   "dependencies": {
     "h3": "2.0.2",
+    "ipdo": "0.0.6",
     "unpalette": "workspace:*",
     "unstorage": "1.17.5"
   },
