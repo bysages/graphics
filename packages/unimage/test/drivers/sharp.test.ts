@@ -155,6 +155,14 @@ describe("sharpDriver", () => {
     expect(result.metadata).toMatchObject({ width: 16, height: 16, format: "png" });
   });
 
+  it("exposes animation timing metadata", async () => {
+    const gif = await readFile(new URL("../fixtures/animated.gif", import.meta.url));
+    const sequence = await driver.decodeFrames!(new Uint8Array(gif), {});
+    expect(sequence.loop).toBe(0);
+    expect(sequence.frames).toHaveLength(20);
+    expect(sequence.frames[0]?.durationMs).toBe(250);
+  });
+
   it("preserves TIFF pages with frames all", async () => {
     const input = new Uint8Array(
       await readFile(new URL("../fixtures/pages.tiff", import.meta.url)),

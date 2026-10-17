@@ -590,6 +590,7 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
         const frameHeight = info.height / pages;
         const frameLength = info.width * frameHeight * 4;
         const format = sharpFormats[meta.format ?? ""] ?? "png";
+        const delaysMs = Array.isArray(meta.delay) ? meta.delay : undefined;
         const frames = Array.from({ length: pages }, (_, index) => ({
           data: new Uint8Array(data.buffer, data.byteOffset + index * frameLength, frameLength),
           width: info.width,
@@ -603,6 +604,7 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
             hasAlpha: true,
             pages,
           },
+          ...(delaysMs?.[index] === undefined ? {} : { durationMs: delaysMs[index] }),
         }));
 
         return {
@@ -615,6 +617,7 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
             pages,
             hasAlpha: true,
           },
+          ...(meta.loop === undefined ? {} : { loop: meta.loop }),
         };
       } catch (error) {
         if (error instanceof UnImageError) throw error;

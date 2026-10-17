@@ -233,11 +233,15 @@ export interface ImageInputDecodeOptions {
 
 export interface RawImageFrame extends RawImageData {
   metadata: ImageMetadata;
+  /** Delay before the next frame, in milliseconds. */
+  durationMs?: number;
 }
 
 export interface RawImageSequence {
   frames: readonly RawImageFrame[];
   metadata: ImageMetadata;
+  /** 0 means loop forever; matches common GIF/WebP semantics. */
+  loop?: number;
 }
 
 export interface DecodeCapability {
