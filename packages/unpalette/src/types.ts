@@ -4,6 +4,16 @@ export interface RGB {
   b: number;
 }
 
+export type ColorInput = RGB | RGBA | string;
+
+export interface RGBA {
+  r: number;
+  g: number;
+  b: number;
+  /** 0..1 */
+  a: number;
+}
+
 export interface PaletteColor {
   color: RGB;
   /** Lowercase `#rrggbb`. */
@@ -26,10 +36,21 @@ export interface PixelInput {
   height: number;
 }
 
+export interface ColorStop {
+  color: RGB;
+  /** Lowercase `#rrggbb`. */
+  hex: string;
+}
+
+/** Generated colors, such as harmony schemes and tonal scales. */
+export interface ColorSequence {
+  colors: ColorStop[];
+}
+
 export interface ExtractOptions {
   /** Palette size, 2..256. Default 8. */
   colors?: number;
-  /** Pixels with alpha below this value are excluded from statistics. Default 255. */
+  /** Visible pixels have `alpha >= 1`; this default ignores only fully transparent pixels. */
   alphaThreshold?: number;
   /** Uniformly sample down to at most this many pixels. Default 65536. */
   maxPixels?: number;
@@ -39,5 +60,6 @@ export interface QuantizedImage {
   data: Uint8Array;
   width: number;
   height: number;
+  layout: "rgba8";
   palette: Palette;
 }

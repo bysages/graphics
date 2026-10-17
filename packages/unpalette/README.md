@@ -3,17 +3,18 @@
 ![npm version](https://img.shields.io/npm/v/unpalette)
 ![npm license](https://img.shields.io/npm/l/unpalette)
 
-> Color palette extraction, quantization, and remapping for browsers and Node.js — zero runtime dependencies, one algorithm everywhere.
+> Color palette extraction, transformation, accessibility, quantization, and remapping for browsers and Node.js — zero runtime dependencies, one algorithm everywhere.
 
 ## Features
 
-- 🎨 **Dominant color extraction** — median-cut with largest-gap splitting, so a cut never lands inside a tight color cluster; colors come back sorted by pixel share with HEX output
+- 🎨 **Dominant color extraction** — dominant-color clustering with largest-gap splitting, so a cut never lands inside a tight color cluster; colors come back sorted by pixel share with HEX output
 - 🪣 **Quantization** — reduce any RGBA8 image to its dominant palette, alpha preserved per pixel
 - 🖌 **Remapping** — apply a caller-provided palette (a fixed brand set, a terminal theme) with redmean nearest-color matching
 - ⚡ **One algorithm, every runtime** — pure TypeScript with zero runtime dependencies; the browser and Node produce identical palettes from identical pixels
 - 📦 **Bounded work** — large inputs are uniformly sampled down to a configurable pixel budget
 - 🌈 **Palette generation** — `generatePalette` derives complementary, analogous, triadic, split-complementary, and monochromatic palettes from one base color through classic color-wheel schemes
 - 🎭 **Style variants** — `extractPaletteVariants` reads one image into vivid, muted, dark, and light palettes by HSL attributes
+- 🧪 **Color utilities** — parse RGB, HSL, and OKLCH CSS colors, composite alpha, map out-of-gamut Oklch, interpolate in sRGB, linear sRGB, Oklab, or Oklch, generate scales and gradients, check WCAG contrast, and simulate color-vision deficiencies
 
 ## Installation
 
@@ -53,7 +54,45 @@ const branded = applyPalette(pixels, [
 ]);
 ```
 
-`extractPalette` skips pixels below `alphaThreshold` (default 255), and samples large inputs down to `maxPixels` (default 65536) before analysis. Nearest-color matching uses the redmean distance — noticeably better than plain RGB Euclidean while staying cheap enough for per-pixel lookups.
+`extractPalette` skips fully transparent pixels by default (`alphaThreshold: 1`), and samples large inputs down to `maxPixels` (default 65536) before analysis. Nearest-color matching uses the redmean distance — noticeably better than plain RGB Euclidean while staying cheap enough for per-pixel lookups.
+
+### Color utilities and scales
+
+The same package includes the color math behind palette tools:
+
+```ts
+import {
+  compositeColors,
+  contrastRatio,
+  formatColor,
+  generateColorScale,
+  generateGradient,
+  lighten,
+  mixColors,
+  inGamut,
+  readableTextColor,
+  rgbToOklch,
+  rotateHue,
+  simulateColorVision,
+} from "unpalette";
+
+const brand = "#3366cc";
+const scale = generateColorScale(brand, { steps: 9, space: "oklch" });
+const accent = rotateHue(brand, 180);
+const blended = mixColors(brand, "#ffcc00", { amount: 0.25, space: "oklch" });
+const gradient = generateGradient([brand, accent], { steps: 7, space: "oklch" });
+const rendered = compositeColors("rgba(255, 0, 0, 0.5)", "#ffffff");
+const displayable = toGamut({ l: 0.8, c: 0.35, h: 20 });
+
+console.log(formatColor(blended, "hex"));
+console.log(rgbToOklch(brand));
+console.log(inGamut({ l: 0.8, c: 0.35, h: 20 }), displayable);
+console.log(readableTextColor(brand));
+console.log(contrastRatio(brand, "#ffffff"));
+console.log(simulateColorVision(brand, "deuteranopia", { severity: 0.75 }));
+```
+
+All functions are pure TypeScript and runtime-agnostic.
 
 ### Generating palettes
 
@@ -88,15 +127,25 @@ const result = await image.transform(input, {
 });
 
 // Decode directly to RGBA8 pixels; no intermediate encoded image is needed.
-const pixels = await image.decode(input, { frames: "first" });
+const pixels = await image.decode(input);
 
 const palette = extractPalette(pixels);
+
+// Quantized pixels retain RGBA8 shape and can be passed back to unimage as raw input.
+const reduced = quantize(pixels, { colors: 16 });
+const rawImage = {
+  data: reduced.data,
+  width: reduced.width,
+  height: reduced.height,
+  layout: reduced.layout,
+};
 ```
 
 ## Related Projects
 
 - [Graphics](https://github.com/bysages/graphics) — the parent monorepo and ecosystem docs
 - [unimage](https://github.com/bysages/graphics/tree/main/packages/unimage) — decode image bytes into the RGBA8 pixels that palette APIs consume
+- [Coolors](https://coolors.co/) — a reference for palette, tonal-scale, contrast, and color-vision workflows
 
 ## License
 

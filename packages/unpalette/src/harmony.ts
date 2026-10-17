@@ -1,5 +1,5 @@
 import { hslToRgb, parseColor, rgbToHsl, toHex } from "./color";
-import type { Palette, PaletteColor, RGB } from "./types";
+import type { ColorSequence, RGB } from "./types";
 
 export type HarmonyScheme =
   | "complementary"
@@ -28,17 +28,14 @@ const monochromaticLightness = [0.25, 0.4, 0.55, 0.7, 0.85];
 export function generatePalette(
   base: RGB | string,
   scheme: HarmonyScheme = "complementary",
-): Palette {
+): ColorSequence {
   const { h, s, l } = rgbToHsl(parseColor(base));
   const colors =
     scheme === "monochromatic"
       ? monochromaticLightness.map((l) => hslToRgb({ h, s, l }))
       : offsets[scheme].map((degrees) => hslToRgb({ h: (h + degrees + 360) % 360, s, l }));
 
-  const paletteColors: PaletteColor[] = colors.map((color) => ({
-    color,
-    hex: toHex(color),
-    ratio: 1 / colors.length,
-  }));
-  return { colors: paletteColors, sampled: colors.length };
+  return {
+    colors: colors.map((color) => ({ color, hex: toHex(color) })),
+  };
 }

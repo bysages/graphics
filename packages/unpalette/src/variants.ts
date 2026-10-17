@@ -40,8 +40,13 @@ export function extractPaletteVariants(
   input: PixelInput,
   options: VariantOptions = {},
 ): PaletteVariants {
-  const pixels = sample(input, options.alphaThreshold ?? 255, options.maxPixels ?? 65536);
+  const pixels = sample(input, options.alphaThreshold ?? 1, options.maxPixels ?? 65536);
   const variantColors = options.variantColors ?? defaultVariantColors;
+  if (!Number.isInteger(variantColors) || variantColors < 1 || variantColors > 256) {
+    throw new RangeError(
+      `Variant color count must be an integer between 1 and 256, got ${variantColors}.`,
+    );
+  }
 
   const groups: Record<PaletteVariant, RGB[]> = {
     vibrant: [],

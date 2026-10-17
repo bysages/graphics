@@ -1,7 +1,7 @@
 {
   "name": "unpalette",
   "version": "0.0.1",
-  "description": "Color palette extraction, quantization, and remapping for browsers and Node.js with zero runtime dependencies",
+  "description": "Color palette extraction, transformation, accessibility, quantization, and remapping for browsers and Node.js",
   "keywords": [
     "color",
     "image",
@@ -43,6 +43,7 @@
     "dev": "vp pack --watch",
     "build": "vp pack",
     "prepack": "pnpm build",
+    "test": "vp test run",
     "release": "basis publish"
   },
   "engines": {
