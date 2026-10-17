@@ -273,6 +273,9 @@ export function applyPixelFilter(
         | "tint"
         | "contrast"
         | "convolve"
+        | "colorMatrix"
+        | "posterize"
+        | "pixelate"
         | "removeAlpha"
         | "ensureAlpha";
     }
@@ -581,6 +584,82 @@ export function applyPixelFilter(
           }
           output.data[(y * image.width + x) * 4 + 3] =
             image.data[(y * image.width + x) * 4 + 3] ?? 255;
+        }
+      }
+      return output;
+    }
+    case "colorMatrix": {
+      const output = cloneImage(image);
+      const matrix = operation.matrix;
+      for (let index = 0; index < output.data.length; index += 4) {
+        const red = (output.data[index] as number) / 255;
+        const green = (output.data[index + 1] as number) / 255;
+        const blue = (output.data[index + 2] as number) / 255;
+        const alpha = (output.data[index + 3] as number) / 255;
+        for (let row = 0; row < 4; row += 1) {
+          const value =
+            (matrix[row * 5] ?? 0) * red +
+            (matrix[row * 5 + 1] ?? 0) * green +
+            (matrix[row * 5 + 2] ?? 0) * blue +
+            (matrix[row * 5 + 3] ?? 0) * alpha +
+            (matrix[row * 5 + 4] ?? 0);
+          output.data[index + row] = clamp255(value * 255);
+        }
+      }
+      return output;
+    }
+    case "posterize": {
+      const output = cloneImage(image);
+      const step = 255 / (operation.levels - 1);
+      const quantize = (value: number) => clamp255(Math.round(Math.round(value / step) * step));
+      const channelCount = operation.alpha === true ? 4 : 3;
+      for (let index = 0; index < output.data.length; index += 4) {
+        for (let channel = 0; channel < channelCount; channel += 1) {
+          output.data[index + channel] = quantize(output.data[index + channel] as number);
+        }
+      }
+      return output;
+    }
+    case "pixelate": {
+      const output = cloneImage(image);
+      const size = operation.size;
+      for (let y = 0; y < image.height; y += size) {
+        for (let x = 0; x < image.width; x += size) {
+          const width = Math.min(size, image.width - x);
+          const height = Math.min(size, image.height - y);
+          let red = 0;
+          let green = 0;
+          let blue = 0;
+          let alphaWeight = 0;
+          for (let pixelY = y; pixelY < y + height; pixelY += 1) {
+            for (let pixelX = x; pixelX < x + width; pixelX += 1) {
+              const index = pixelIndex(image, pixelX, pixelY);
+              const alpha = (image.data[index + 3] as number) / 255;
+              red += (image.data[index] as number) * alpha;
+              green += (image.data[index + 1] as number) * alpha;
+              blue += (image.data[index + 2] as number) * alpha;
+              alphaWeight += alpha;
+            }
+          }
+          const alpha = clamp255((alphaWeight / (width * height)) * 255);
+          const colorWeight = Math.max(alphaWeight, Number.EPSILON);
+          const blockRed = clamp255(red / colorWeight);
+          const blockGreen = clamp255(green / colorWeight);
+          const blockBlue = clamp255(blue / colorWeight);
+          const target = pixelIndex(output, x, y);
+          output.data[target] = blockRed;
+          output.data[target + 1] = blockGreen;
+          output.data[target + 2] = blockBlue;
+          output.data[target + 3] = alpha;
+          for (let row = 0; row < height; row += 1) {
+            for (let column = 0; column < width; column += 1) {
+              const index = pixelIndex(output, x + column, y + row);
+              output.data[index] = blockRed;
+              output.data[index + 1] = blockGreen;
+              output.data[index + 2] = blockBlue;
+              output.data[index + 3] = alpha;
+            }
+          }
         }
       }
       return output;

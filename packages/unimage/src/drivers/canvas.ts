@@ -498,6 +498,9 @@ function applyOperation(surface: Surface, operation: ImageOperation): Surface {
     case "opacity":
     case "contrast":
     case "convolve":
+    case "colorMatrix":
+    case "posterize":
+    case "pixelate":
     case "removeAlpha":
     case "ensureAlpha":
       return pixelFilterSurface(surface, operation);
@@ -580,6 +583,9 @@ const canvasOperationNames = [
   "tint",
   "contrast",
   "convolve",
+  "colorMatrix",
+  "posterize",
+  "pixelate",
   "removeAlpha",
   "ensureAlpha",
 ] as const;

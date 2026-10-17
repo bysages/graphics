@@ -59,6 +59,9 @@ const nativeOperations = new Set<ImageOperation["type"]>([
 ]);
 
 const fallbackOperations = new Set<ImageOperation["type"]>([
+  "colorMatrix",
+  "posterize",
+  "pixelate",
   "opacity",
   "dilate",
   "erode",
@@ -683,7 +686,17 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
           },
           operation as Extract<
             ImageOperation,
-            { type: "dilate" | "erode" | "clahe" | "unflatten" | "opacity" }
+            {
+              type:
+                | "dilate"
+                | "erode"
+                | "clahe"
+                | "unflatten"
+                | "opacity"
+                | "colorMatrix"
+                | "posterize"
+                | "pixelate";
+            }
           >,
         );
         instance = factory(Buffer.from(filtered.data), {

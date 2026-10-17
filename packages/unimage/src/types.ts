@@ -195,6 +195,26 @@ export interface ContrastOperation {
   amount: number;
 }
 
+export interface ColorMatrixOperation {
+  type: "colorMatrix";
+  /** Row-major 4×5 matrix in CSS/SVG `feColorMatrix` semantics: RGB input, alpha input, and offset are 0..1. */
+  matrix: readonly number[];
+}
+
+export interface PosterizeOperation {
+  type: "posterize";
+  /** Distinct levels per RGB channel, from 2 through 255. */
+  levels: number;
+  /** Quantize alpha as well; defaults to false so transparency stays smooth. */
+  alpha?: boolean;
+}
+
+export interface PixelateOperation {
+  type: "pixelate";
+  /** Square block size, from 1 through 256. */
+  size: number;
+}
+
 export interface ConvolveOperation {
   kernel: readonly number[];
   width: number;
@@ -311,6 +331,9 @@ export type ImageOperation =
   | TintOperation
   | ContrastOperation
   | (ConvolveOperation & { type: "convolve" })
+  | ColorMatrixOperation
+  | PosterizeOperation
+  | PixelateOperation
   | RemoveAlphaOperation
   | EnsureAlphaOperation;
 

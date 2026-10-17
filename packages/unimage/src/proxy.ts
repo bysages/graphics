@@ -82,6 +82,7 @@ export interface ImageProxyModifiers {
   gamma?: string;
   negate?: boolean | string;
   normalize?: boolean | string;
+  pixelate?: number | string;
   threshold?: number | string;
   linear?: string;
   modulate?: string;
@@ -186,6 +187,7 @@ const knownModifiers = new Set<string>([
   "gamma",
   "negate",
   "normalize",
+  "pixelate",
   "threshold",
   "linear",
   "modulate",
@@ -520,6 +522,17 @@ export function modifiersToRecipe(
       });
     }
     operations.push({ type: "median", size });
+  }
+  if (modifiers.pixelate !== undefined) {
+    const size = optionalNumber(String(modifiers.pixelate), "pixelate");
+    if (size === undefined || !Number.isInteger(size) || size < 1 || size > 256) {
+      throw new HTTPError({
+        status: 400,
+        statusText: "UNIMAGE_UNSUPPORTED_MODIFIER",
+        message: "The pixelate size must be an integer from 1 to 256.",
+      });
+    }
+    operations.push({ type: "pixelate", size });
   }
   if (modifiers.modulate !== undefined) {
     const parts = modifierParts(String(modifiers.modulate), 4);

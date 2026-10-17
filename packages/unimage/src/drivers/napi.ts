@@ -631,6 +631,9 @@ async function applyOperation(
     case "threshold":
     case "linear":
     case "modulate":
+    case "colorMatrix":
+    case "posterize":
+    case "pixelate":
     case "tint": {
       const current = await toRgbaState(transformer, signal);
       const filtered = applyPixelFilter(current, operation);
@@ -964,6 +967,18 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
             convolve: {
               supported: true,
               notes: ["Only unscaled 3×3 kernels are supported."],
+            },
+            colorMatrix: {
+              supported: true,
+              notes: ["Applied through the built-in RGBA pixel pipeline."],
+            },
+            posterize: {
+              supported: true,
+              notes: ["Applied through the built-in RGBA pixel pipeline."],
+            },
+            pixelate: {
+              supported: true,
+              notes: ["Applied through the built-in RGBA pixel pipeline."],
             },
             removeAlpha: { supported: true },
             ensureAlpha: { supported: true },

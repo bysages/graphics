@@ -60,6 +60,9 @@ const operationTypes: readonly ImageOperationType[] = [
   "tint",
   "contrast",
   "convolve",
+  "colorMatrix",
+  "posterize",
+  "pixelate",
   "removeAlpha",
   "ensureAlpha",
 ];
@@ -189,6 +192,9 @@ const operationKeys: Record<ImageOperationType, readonly string[]> = {
   tint: ["type", "color"],
   contrast: ["type", "amount"],
   convolve: ["type", "kernel", "width", "height", "scale", "offset", "border"],
+  colorMatrix: ["type", "matrix"],
+  posterize: ["type", "levels", "alpha"],
+  pixelate: ["type", "size"],
   removeAlpha: ["type"],
   ensureAlpha: ["type", "alpha"],
 };
@@ -447,6 +453,37 @@ function parseOperation(value: unknown): ImageOperation {
       }
       return operation;
     }
+    case "colorMatrix": {
+      if (!Array.isArray(value.matrix) || value.matrix.length !== 20) {
+        throw new UnImageError("colorMatrix.matrix must contain 20 values in a 4x5 matrix.", {
+          code: "UNIMAGE_INVALID_RECIPE",
+          operation: "colorMatrix",
+        });
+      }
+      const matrix = value.matrix.map((item) => {
+        if (typeof item !== "number" || !Number.isFinite(item)) {
+          throw new UnImageError("colorMatrix.matrix values must be finite numbers.", {
+            code: "UNIMAGE_INVALID_RECIPE",
+            operation: "colorMatrix",
+          });
+        }
+        return item;
+      });
+      return { type: "colorMatrix", matrix };
+    }
+    case "posterize": {
+      const operation: Extract<ImageOperation, { type: "posterize" }> = {
+        type: "posterize",
+        levels: parseIntegerRange(value.levels, "posterize.levels", 2, 255),
+      };
+      if (value.alpha !== undefined) operation.alpha = value.alpha === true;
+      return operation;
+    }
+    case "pixelate":
+      return {
+        type: "pixelate",
+        size: parseIntegerRange(value.size, "pixelate.size", 1, 256),
+      };
     case "removeAlpha":
       return { type: "removeAlpha" };
     case "ensureAlpha": {
