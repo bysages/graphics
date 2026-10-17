@@ -93,33 +93,55 @@ function toBlob(input: Exclude<ImageInput, RawImageData>): Blob {
   return new Blob([bytes.buffer as ArrayBuffer], { type: "application/octet-stream" });
 }
 
-let nodeCanvas: NodeCanvasModule | undefined;
-let nodeCanvasModuleCache: Promise<NodeCanvasModule | undefined> | undefined;
+let canvasModule: NodeCanvasModule | undefined;
 
 function browserAvailable(): boolean {
   return typeof OffscreenCanvas === "function" || typeof document !== "undefined";
 }
 
-/**
- * unpdf-style lazy resolution: browsers use their native canvas, Node.js
- * resolves the optional `@napi-rs/canvas` peer on first use.
- */
-async function resolveNodeCanvas(): Promise<NodeCanvasModule | undefined> {
-  if (browserAvailable()) return undefined;
-  nodeCanvasModuleCache ??= import("@napi-rs/canvas")
-    .then((module_) => {
-      const candidate = module_ as unknown as NodeCanvasModule & { default?: NodeCanvasModule };
-      return candidate.createCanvas !== undefined
-        ? candidate
-        : (candidate.default as NodeCanvasModule);
-    })
-    .catch(() => undefined);
-  nodeCanvas = await nodeCanvasModuleCache;
-  return nodeCanvas;
+function normalizeCanvasModule(
+  module: Awaited<ReturnType<NonNullable<CanvasDriverOptions["canvasImport"]>>>,
+): NodeCanvasModule {
+  const candidate = module as unknown as NodeCanvasModule & { default?: NodeCanvasModule };
+  if (candidate.createCanvas !== undefined) return candidate;
+  if (candidate.default?.createCanvas !== undefined) return candidate.default;
+  throw new TypeError('The "@napi-rs/canvas" module does not export createCanvas.');
+}
+
+function createCanvasResolver(
+  canvasImport: CanvasDriverOptions["canvasImport"],
+): () => Promise<NodeCanvasModule | undefined> {
+  let module: NodeCanvasModule | undefined;
+  let pending: Promise<NodeCanvasModule | undefined> | undefined;
+
+  return async () => {
+    if (browserAvailable()) return undefined;
+    if (module) return module;
+    if (!canvasImport) return undefined;
+
+    pending ??= (async () => {
+      try {
+        return normalizeCanvasModule(await canvasImport());
+      } catch (error) {
+        throw new UnImageError('The "@napi-rs/canvas" module could not be loaded.', {
+          code: "UNIMAGE_DRIVER_UNAVAILABLE",
+          cause: error,
+        });
+      }
+    })();
+
+    try {
+      module = await pending;
+    } catch (error) {
+      pending = undefined;
+      throw error;
+    }
+    return module;
+  };
 }
 
 function createSurface(width: number, height: number): Surface {
-  if (nodeCanvas) return nodeCanvas.createCanvas(width, height);
+  if (canvasModule) return canvasModule.createCanvas(width, height);
   if (typeof OffscreenCanvas === "function") return new OffscreenCanvas(width, height);
   if (typeof document === "undefined") {
     throw new UnImageError(
@@ -147,7 +169,7 @@ function surfaceContext(surface: Surface): SurfaceContext2D {
 }
 
 function createImageData(data: Uint8ClampedArray, width: number, height: number): ImageDataLike {
-  if (nodeCanvas) return new nodeCanvas.ImageData(data, width, height);
+  if (canvasModule) return new canvasModule.ImageData(data, width, height);
   return new ImageData(data as Uint8ClampedArray<ArrayBuffer>, width, height);
 }
 
@@ -182,12 +204,12 @@ async function decodeSurface(
     return surface;
   }
 
-  if (nodeCanvas) {
+  if (canvasModule) {
     try {
       const bytes =
         input instanceof Blob ? new Uint8Array(await input.arrayBuffer()) : (input as Uint8Array);
-      const image = await abortable(nodeCanvas.loadImage(bytes), signal, "decode");
-      const surface = nodeCanvas.createCanvas(image.width, image.height);
+      const image = await abortable(canvasModule.loadImage(bytes), signal, "decode");
+      const surface = canvasModule.createCanvas(image.width, image.height);
       surfaceContext(surface).drawImage(image as unknown as Surface, 0, 0);
       return surface;
     } catch (error) {
@@ -648,11 +670,10 @@ function surfaceToBlob(
 
 export interface CanvasDriverOptions {
   /**
-   * Pre-resolved `@napi-rs/canvas` module. When omitted, the driver resolves
-   * the optional peer through a dynamic import on first use in Node.js
-   * (unpdf-style lazy resolution) and stays fully native in browsers.
+   * Follows unpdf's explicit Canvas factory boundary: the browser path never
+   * follows a Node-only import, while Node callers inject the optional module.
    */
-  nodeCanvas?: NodeCanvasModule;
+  canvasImport?: () => Promise<typeof import("@napi-rs/canvas")>;
 }
 
 const canvasOperationNames = [
@@ -702,13 +723,14 @@ function unavailableCapabilities(driverName: string): ImageCapabilities {
 }
 
 export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
-  if (options.nodeCanvas !== undefined) nodeCanvas = options.nodeCanvas;
+  const resolveCanvas = createCanvasResolver(options.canvasImport);
+
   return {
     name: "canvas",
 
     async capabilities(): Promise<ImageCapabilities> {
-      nodeCanvas ??= await resolveNodeCanvas();
-      if (nodeCanvas === undefined && !browserAvailable()) {
+      canvasModule = await resolveCanvas();
+      if (canvasModule === undefined && !browserAvailable()) {
         return unavailableCapabilities("canvas");
       }
 
@@ -725,7 +747,7 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
             decode: {
               pixelFormats: ["rgba8"],
               frames: ["still"],
-              orientation: nodeCanvas === undefined && format === "jpeg",
+              orientation: canvasModule === undefined && format === "jpeg",
               rasterDensity: false,
               vector: false,
             },
@@ -758,8 +780,8 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
             ],
           },
           autoOrient: {
-            supported: nodeCanvas === undefined,
-            ...(nodeCanvas === undefined
+            supported: canvasModule === undefined,
+            ...(canvasModule === undefined
               ? {}
               : { notes: ["Canvas image decoding does not apply EXIF orientation."] }),
           },
@@ -771,7 +793,7 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
         notes: [
           "Canvas encoders strip incidental metadata.",
           "Capability detection is performed with a 1x1 canvas.",
-          ...(nodeCanvas === undefined
+          ...(canvasModule === undefined
             ? []
             : ["Node backend runs on @napi-rs/canvas; EXIF auto-orientation is ignored."]),
         ],
@@ -797,8 +819,8 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
         };
       }
 
-      nodeCanvas ??= await resolveNodeCanvas();
-      if (nodeCanvas) {
+      canvasModule = await resolveCanvas();
+      if (canvasModule) {
         const bytes =
           input instanceof Blob ? new Uint8Array(await input.arrayBuffer()) : (input as Uint8Array);
         const surface = await decodeSurface(input, false, context?.signal);
@@ -859,7 +881,7 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
         });
       }
 
-      nodeCanvas ??= await resolveNodeCanvas();
+      canvasModule = await resolveCanvas();
       const surface = await decodeSurface(input, false, request.signal);
       const image = toRgbaImage(surface);
       const byteLength =
@@ -890,7 +912,7 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
 
     async transform(input, recipe, context): Promise<ImageResult> {
       assertNotAborted(context?.signal, "transform");
-      nodeCanvas ??= await resolveNodeCanvas();
+      canvasModule = await resolveCanvas();
       if (recipe.input?.frames === "all" || recipe.input?.rasterDensity !== undefined) {
         throw new UnImageError("The canvas driver does not support this input option.", {
           code: "UNIMAGE_UNSUPPORTED_OPERATION",

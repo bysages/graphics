@@ -8,8 +8,8 @@ import { svgoDriver } from "unimage/drivers/svgo";
 import { beforeAll, describe, test } from "vite-plus/test";
 
 const sharp = sharpDriver();
-const napi = napiDriver();
-const canvas = canvasDriver();
+const napi = napiDriver({ napiImport: () => import("@napi-rs/image") });
+const canvas = canvasDriver({ canvasImport: () => import("@napi-rs/canvas") });
 const svgo = svgoDriver({ runtime: "node" });
 
 function requireDecode(driver: {

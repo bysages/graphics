@@ -50,10 +50,12 @@ Core runtime dependencies are `h3`, `unpalette`, and `unstorage`. Image engines 
 import { createImageManager } from "unimage";
 import { napiDriver } from "unimage/drivers/napi";
 
-const image = createImageManager({ driver: napiDriver() });
+const image = createImageManager({
+  driver: napiDriver({ napiImport: () => import("@napi-rs/image-wasm32-wasi") }),
+});
 ```
 
-Install `@napi-rs/image-wasm32-wasi` where WASI support is needed. The official `@napi-rs/image` loader selects native or WASI bindings; its browser entry uses the WASI package. Bundlers must emit its `.wasm` and worker assets, or inject the resolved module through `napiDriver({ lib })`.
+The browser example uses `@napi-rs/image-wasm32-wasi`; install it and let the bundler emit its `.wasm` and worker assets.
 
 ### Node
 
@@ -73,7 +75,7 @@ const result = await image.transform(input, {
 });
 ```
 
-Swap in `napiDriver` from `unimage/drivers/napi` for a pure prebuilt-`.node` engine with no libvips.
+Swap in `napiDriver({ napiImport: () => import("@napi-rs/image") })` from `unimage/drivers/napi` for a pure prebuilt-`.node` engine with no libvips.
 
 ### Browser and Node
 
@@ -91,14 +93,16 @@ const result = await image.transform(file, {
 const blob = new Blob([result.data], { type: result.mediaType });
 ```
 
-In browsers, `canvasDriver` uses the native canvas backend and detects encoders through a 1×1 canvas. In Node.js, it lazily imports the optional `@napi-rs/canvas` peer on first use—following [unpdf](https://github.com/unjs/unpdf)'s Canvas factory pattern—so browsers never load the native module and Node gets the same driver without a build step.
+In browsers, `canvasDriver` uses the native canvas backend and detects encoders through a 1×1 canvas. For Node.js, callers explicitly provide the Canvas import following [unpdf](https://github.com/unjs/unpdf)'s Canvas factory pattern, so the browser bundle never follows a Node-only module. Server exports inject the import for you.
 
 The napi canvas backend ignores EXIF auto-orientation. To inject the backend explicitly:
 
 ```ts
 import { canvasDriver } from "unimage/drivers/canvas";
 
-const driver = canvasDriver({ nodeCanvas: await import("@napi-rs/canvas") });
+const driver = canvasDriver({
+  canvasImport: () => import("@napi-rs/canvas"),
+});
 ```
 
 ### Server (IPX-compatible)

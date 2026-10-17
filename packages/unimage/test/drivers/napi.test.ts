@@ -11,7 +11,7 @@ const raw: RawImageData = {
   layout: "rgba8",
 };
 
-const driver = napiDriver();
+const driver = napiDriver({ napiImport: () => import("@napi-rs/image") });
 
 function recipe(
   operations: ImageRecipe["operations"],

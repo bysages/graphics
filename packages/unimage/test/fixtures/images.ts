@@ -1,6 +1,12 @@
 import { expect } from "vite-plus/test";
 
 import { canvasDriver } from "../../src/drivers/canvas";
+
+const nodeNapiDriver = (): ReturnType<typeof napiDriver> =>
+  napiDriver({ napiImport: () => import("@napi-rs/image") });
+
+const nodeCanvasDriver = (): ReturnType<typeof canvasDriver> =>
+  canvasDriver({ canvasImport: () => import("@napi-rs/canvas") });
 import { napiDriver } from "../../src/drivers/napi";
 import { sharpDriver } from "../../src/drivers/sharp";
 import type { ImageDriver, ImageOperation, ImageResult, RawImageData } from "../../src/types";
@@ -9,8 +15,8 @@ export type RasterDriverFactory = () => ImageDriver;
 
 export const rasterDriverFactories = [
   ["sharp", sharpDriver],
-  ["napi", napiDriver],
-  ["canvas", canvasDriver],
+  ["napi", nodeNapiDriver],
+  ["canvas", nodeCanvasDriver],
 ] as const;
 
 export function gradientImage(width = 8, height = 6): RawImageData {

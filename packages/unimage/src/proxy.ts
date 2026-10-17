@@ -775,7 +775,11 @@ export function createImageProxy(userOptions: ImageProxyOptions): ImageProxy {
   const rasterDriver =
     options.driver ??
     overlayDriver(
-      canvasDriver(options.canvasOptions),
+      canvasDriver(
+        options.canvasOptions ?? {
+          canvasImport: () => import("@napi-rs/canvas"),
+        },
+      ),
       options.sharpOptions === undefined
         ? sharpDriver()
         : sharpDriver({ sharpOptions: options.sharpOptions }),

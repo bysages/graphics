@@ -1,6 +1,10 @@
-import { defineConfig } from "vite-plus";
+import nodePolyfills from "@rolldown/plugin-node-polyfills";
+import { defineConfig, type PluginOption } from "vite-plus";
 
 export default defineConfig({
+  pack: {
+    plugins: [nodePolyfills()] as PluginOption[],
+  },
   test: {
     include: ["packages/**/*.{spec,test}.ts"],
     benchmark: {

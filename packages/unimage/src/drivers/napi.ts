@@ -99,10 +99,10 @@ export interface NapiModule {
 
 export interface NapiDriverOptions {
   /**
-   * Inject a resolved `@napi-rs/image` module. When omitted, the official
-   * package loader selects the appropriate backend.
+   * Follows the same explicit module boundary as unpdf: callers choose the
+   * Node native package or the browser WASI package; core code follows neither.
    */
-  lib?: NapiModule | (() => NapiModule | Promise<NapiModule>);
+  napiImport?: () => Promise<typeof import("@napi-rs/image")>;
 }
 
 const resizeFilterNearest = 0;
@@ -194,29 +194,45 @@ function normalizeNapiModule(module: unknown): NapiModule | undefined {
   return fallback && "Transformer" in fallback ? (fallback as NapiModule) : undefined;
 }
 
-let napiModuleCache: Promise<NapiModule> | undefined;
+function createNapiResolver(
+  napiImport: NapiDriverOptions["napiImport"],
+): () => Promise<NapiModule> {
+  let module: NapiModule | undefined;
+  let pending: Promise<NapiModule> | undefined;
 
-async function importNapiModule(name: string): Promise<NapiModule> {
-  const normalized = normalizeNapiModule(await import(name));
-  if (normalized === undefined) {
-    throw new TypeError(`The "${name}" module does not export an image Transformer.`);
-  }
-  return normalized;
-}
+  return async () => {
+    if (module) return module;
+    if (!napiImport) {
+      throw new UnImageError(
+        'No N-API image module was provided. Pass napiImport with "@napi-rs/image" on Node.js or "@napi-rs/image-wasm32-wasi" in the browser.',
+        { code: "UNIMAGE_DRIVER_UNAVAILABLE" },
+      );
+    }
 
-async function loadModule(options: NapiDriverOptions): Promise<NapiModule> {
-  if (typeof options.lib === "function") return await options.lib();
-  if (options.lib) return options.lib;
-  napiModuleCache ??= importNapiModule("@napi-rs/image").catch((error: unknown) => {
-    throw new UnImageError(
-      'The "@napi-rs/image" loader could not select a backend. Install the optional "@napi-rs/image-wasm32-wasi" package for WASI support.',
-      {
-        code: "UNIMAGE_DRIVER_UNAVAILABLE",
-        cause: error,
-      },
-    );
-  });
-  return napiModuleCache;
+    pending ??= (async () => {
+      try {
+        const normalized = normalizeNapiModule(await napiImport());
+        if (normalized === undefined) {
+          throw new TypeError("The imported module does not export an image Transformer.");
+        }
+        return normalized;
+      } catch (error) {
+        if (error instanceof UnImageError) throw error;
+        throw new UnImageError("The N-API image module could not be loaded.", {
+          code: "UNIMAGE_DRIVER_UNAVAILABLE",
+          cause: error,
+        });
+      }
+    })();
+
+    try {
+      module = await pending;
+    } catch (error) {
+      pending = undefined;
+      throw error;
+    }
+    return module;
+  };
 }
 
 const nativeEndianLittle = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
@@ -779,6 +795,7 @@ async function encode(
 }
 
 export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
+  const loadModule = createNapiResolver(options.napiImport);
   let capabilitiesPromise: Promise<ImageCapabilities> | undefined;
 
   async function probeHeicEncoding(module: NapiModule): Promise<boolean> {
@@ -796,7 +813,7 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
 
     async capabilities(): Promise<ImageCapabilities> {
       capabilitiesPromise ??= (async () => {
-        const module = await loadModule(options);
+        const module = await loadModule();
         const heicEncoding = await probeHeicEncoding(module);
         return {
           driver: "napi",
@@ -1078,7 +1095,7 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
         });
       }
 
-      const module = await loadModule(options);
+      const module = await loadModule();
       const transformer = await createTransformer(module, input);
       try {
         const { metadata: meta, state } = await readRgbaState(transformer, request.signal);
@@ -1147,7 +1164,7 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
         return { ...meta, hasAlpha: true };
       }
 
-      const module = await loadModule(options);
+      const module = await loadModule();
       const transformer = await createTransformer(module, input);
       try {
         return normalizeMetadata(await transformer.metadata(false, context?.signal));
@@ -1179,10 +1196,9 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
         });
       }
 
-      const module = await loadModule(options);
-      let state: ImageInput = input;
+      const module = await loadModule();
+      let transformer = await createTransformer(module, input);
       for (const operation of recipe.operations) {
-        const transformer = await createTransformer(module, state);
         try {
           const nextState = await applyOperation(
             module,
@@ -1191,11 +1207,12 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
             context?.signal,
             context?.layers,
           );
+          // Sync operations mutate the current transformer in place. Keep that
+          // transformer so WASI does not round-trip a shared-memory Buffer back
+          // through a new constructor after every stage.
           if (nextState) {
-            state = nextState;
-            continue;
+            transformer = await createTransformer(module, nextState);
           }
-          state = await toRgbaState(transformer, context?.signal);
         } catch (error) {
           if (error instanceof UnImageError) throw error;
           if (context?.signal?.aborted) {
@@ -1212,11 +1229,10 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
         }
       }
 
-      const finalTransformer = await createTransformer(module, state);
       try {
-        const sourceMetadata = await finalTransformer.metadata(false, context?.signal);
+        const sourceMetadata = await transformer.metadata(false, context?.signal);
         const encoded = await encode(
-          finalTransformer,
+          transformer,
           recipe.output.format,
           "quality" in recipe.output ? recipe.output.quality : undefined,
           "lossless" in recipe.output ? recipe.output.lossless : undefined,

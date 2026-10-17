@@ -33,7 +33,7 @@ function gradientWithFocus(): RawImageData {
   return { data, width: 64, height: 64, layout: "rgba8" };
 }
 
-const driver = napiDriver();
+const driver = napiDriver({ napiImport: () => import("@napi-rs/image") });
 
 function recipe(
   operations: ImageRecipe["operations"],
