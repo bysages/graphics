@@ -1,6 +1,6 @@
 {
   "name": "unimage",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Unified image processing API for browsers and Node.js with typed operation recipes and pluggable drivers",
   "keywords": [
     "avif",
@@ -70,7 +70,7 @@
     "ipdo": "0.0.6",
     "sharp": "0.35.5",
     "svgo": "4.1.0",
-    "unstorage": "1.17.5"
+    "unstorage": "2.0.0-alpha.11"
   },
   "peerDependencies": {
     "@napi-rs/canvas": ">=1.0 <2",
@@ -78,7 +78,7 @@
     "h3": ">=2.0 <3",
     "sharp": "^0.35.0",
     "svgo": "^4.1.0",
-    "unstorage": ">=1.17 <2"
+    "unstorage": ">=2.0.0-alpha.10 <3"
   },
   "peerDependenciesMeta": {
     "@napi-rs/canvas": {

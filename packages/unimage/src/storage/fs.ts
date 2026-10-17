@@ -1,7 +1,7 @@
 import { join, resolve } from "node:path";
 
 import { HTTPError } from "h3";
-import { defineDriver, type Driver } from "unstorage";
+import type { Driver } from "unstorage";
 import fsLiteDriver from "unstorage/drivers/fs-lite";
 
 import { assertNotAborted } from "../utils/abort";
@@ -35,7 +35,7 @@ async function loadFsPromises(): Promise<typeof import("node:fs/promises") | und
   return await fsPromisesModuleCache;
 }
 
-export const fsDriver = defineDriver((options: FSStorageOptions): Driver => {
+export const fsDriver = (options: FSStorageOptions): Driver => {
   const bases = (Array.isArray(options.dir) ? options.dir : [options.dir]).map((dir) =>
     resolve(dir),
   );
@@ -149,4 +149,4 @@ export const fsDriver = defineDriver((options: FSStorageOptions): Driver => {
       return maxAge === undefined ? {} : { maxAge };
     },
   };
-});
+};

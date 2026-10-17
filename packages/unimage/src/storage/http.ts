@@ -7,7 +7,7 @@ import {
   isPrivateIPv4,
   isPrivateIPv6,
 } from "ipdo";
-import { defineDriver, type Driver } from "unstorage";
+import type { Driver } from "unstorage";
 
 import { UnImageError } from "../errors";
 import { normalizeMaxAge } from "../utils/cache";
@@ -126,7 +126,7 @@ function parseMaxAge(cacheControl: string): number | undefined {
  * DNS and reserved-address checks, and per-hop validation across manual
  * redirects (automatic redirect following would bypass those checks).
  */
-export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => {
+export const httpDriver = (options: HTTPStorageOptions): Driver => {
   const rawDomains = Array.isArray(options.domains)
     ? options.domains
     : (options.domains ?? "").split(",");
@@ -383,4 +383,4 @@ export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => 
       }
     },
   };
-});
+};

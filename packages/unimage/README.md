@@ -41,7 +41,7 @@ The core runtime dependency is only `unpalette`. Image engines and server integr
 | Canvas2D in the browser and Node                                    | `pnpm add @napi-rs/canvas`            |
 | sharp WASM fallback for multi-threaded Wasm runtimes (not browsers) | `pnpm add sharp @img/sharp-wasm32`    |
 | SVG optimization                                                    | `pnpm add svgo`                       |
-| Server adapter (`unimage/server`)                                   | `pnpm add h3 unstorage`               |
+| Server adapter (`unimage/server`)                                   | `pnpm add h3 unstorage@alpha`         |
 
 ## Quick Start
 
@@ -135,7 +135,7 @@ app.use("/img", createImageProxyHandler(proxy));
 
 #### Storage
 
-Storage adapters delegate raw IO to unstorage:
+Storage adapters delegate raw IO to unstorage. They support the unstorage 2 line used by Nitro 3 (`>=2.0.0-alpha.10`); in a Nitro app, use Nitro's shared storage instead of installing a second unstorage.
 
 - `fsDriver({ dir })` — read-only filesystem storage on `unstorage/drivers/fs-lite`, plus a symlink-escape guard
 - `httpDriver({ domains, blockPrivateIPs })` — remote storage with SSRF guardrails and per-hop redirect validation
