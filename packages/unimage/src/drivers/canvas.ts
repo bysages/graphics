@@ -16,6 +16,8 @@ import type {
 import { abortable, assertNotAborted } from "../utils/abort";
 import { applyPixelFilter, parseColor, type RgbaImage } from "../utils/filters";
 import { sniffImageFormat } from "../utils/format";
+import { alignedOrigin, focusPoint } from "../utils/geometry";
+import { isRawImageData } from "../utils/input";
 
 interface ImageDataLike {
   data: Uint8ClampedArray;
@@ -77,17 +79,6 @@ const mediaTypes: Record<string, string> = {
   avif: "image/avif",
   gif: "image/gif",
 };
-
-function isRawImage(input: ImageInput): input is RawImageData {
-  return (
-    typeof input === "object" &&
-    input !== null &&
-    "data" in input &&
-    "width" in input &&
-    "height" in input &&
-    "layout" in input
-  );
-}
 
 function toBlob(input: Exclude<ImageInput, RawImageData>): Blob {
   if (input instanceof Blob) return input;
@@ -163,7 +154,7 @@ async function decodeSurface(
   signal?: AbortSignal,
 ): Promise<Surface> {
   assertNotAborted(signal, "decode");
-  if (isRawImage(input)) {
+  if (isRawImageData(input)) {
     if (input.layout !== "rgba8") {
       throw new UnImageError("Only rgba8 raw images are supported.", {
         code: "UNIMAGE_INVALID_INPUT",
@@ -309,62 +300,13 @@ function resizeSurface(
     const scale = Math.min(width / sourceWidth, height / sourceHeight);
     const scaledWidth = Math.round(sourceWidth * scale);
     const scaledHeight = Math.round(sourceHeight * scale);
-    const position = operation.position;
-    const x =
-      position === "left" || position === "left top" || position === "left bottom"
-        ? 0
-        : position === "right" || position === "right top" || position === "right bottom"
-          ? width - scaledWidth
-          : Math.floor((width - scaledWidth) / 2);
-    const y =
-      position === "top" || position === "left top" || position === "right top"
-        ? 0
-        : position === "bottom" || position === "left bottom" || position === "right bottom"
-          ? height - scaledHeight
-          : Math.floor((height - scaledHeight) / 2);
+    const [x, y] = alignedOrigin(operation.position, width - scaledWidth, height - scaledHeight);
     context.drawImage(surface, x, y, scaledWidth, scaledHeight);
   } else {
     context.drawImage(surface, 0, 0, width, height);
   }
 
   return target;
-}
-
-function coverOrigin(
-  position:
-    | "top"
-    | "right top"
-    | "right"
-    | "right bottom"
-    | "bottom"
-    | "left bottom"
-    | "left"
-    | "left top"
-    | "center"
-    | undefined,
-  excessWidth: number,
-  excessHeight: number,
-): [number, number] {
-  switch (position) {
-    case "top":
-      return [excessWidth / 2, 0];
-    case "right top":
-      return [excessWidth, 0];
-    case "right":
-      return [excessWidth, excessHeight / 2];
-    case "right bottom":
-      return [excessWidth, excessHeight];
-    case "bottom":
-      return [excessWidth / 2, excessHeight];
-    case "left bottom":
-      return [0, excessHeight];
-    case "left":
-      return [0, excessHeight / 2];
-    case "left top":
-      return [0, 0];
-    default:
-      return [excessWidth / 2, excessHeight / 2];
-  }
 }
 
 function smartCoverOrigin(
@@ -377,8 +319,8 @@ function smartCoverOrigin(
   scale: number,
 ): [number, number] {
   if (position !== "entropy" && position !== "attention")
-    return coverOrigin(position, excessWidth, excessHeight);
-  const [focusX, focusY] = smartFocus(
+    return alignedOrigin(position, excessWidth, excessHeight);
+  const [focusX, focusY] = focusPoint(
     toRgbaImage(surface),
     position === "entropy" ? "entropy" : "attention",
   );
@@ -391,79 +333,6 @@ function smartCoverOrigin(
     Math.min(excessHeight, focusY * surface.height * scale - targetHeight / 2),
   );
   return [originX, originY];
-}
-
-function smartFocus(image: RgbaImage, mode: "entropy" | "attention"): [number, number] {
-  const stride = Math.max(1, Math.ceil(Math.max(image.width, image.height) / 256));
-  const smallWidth = Math.max(1, Math.floor(image.width / stride));
-  const smallHeight = Math.max(1, Math.floor(image.height / stride));
-  const scores = new Float64Array(smallWidth * smallHeight);
-  for (let y = 0; y < smallHeight; y += 1) {
-    for (let x = 0; x < smallWidth; x += 1) {
-      const sourceX = Math.min(image.width - 1, x * stride);
-      const sourceY = Math.min(image.height - 1, y * stride);
-      const at = (x: number, y: number): number =>
-        lumaAt(
-          image,
-          (Math.max(0, Math.min(image.height - 1, y)) * image.width +
-            Math.max(0, Math.min(image.width - 1, x))) *
-            4,
-        );
-      if (mode === "attention") {
-        const left = at(sourceX - stride, sourceY);
-        const right = at(sourceX + stride, sourceY);
-        const up = at(sourceX, sourceY - stride);
-        const down = at(sourceX, sourceY + stride);
-        scores[y * smallWidth + x] = Math.abs(right - left) + Math.abs(down - up);
-      } else {
-        let entropy = 0;
-        const histogram = new Map<number, number>();
-        const radius = 4;
-        let total = 0;
-        for (let dy = -radius; dy <= radius; dy += radius) {
-          for (let dx = -radius; dx <= radius; dx += radius) {
-            const value = Math.round(at(sourceX + dx * stride, sourceY + dy * stride));
-            histogram.set(value, (histogram.get(value) ?? 0) + 1);
-            total += 1;
-          }
-        }
-        for (const count of histogram.values()) {
-          const probability = count / total;
-          entropy -= probability * Math.log2(probability);
-        }
-        scores[y * smallWidth + x] = entropy;
-      }
-    }
-  }
-
-  const windowWidth = Math.max(1, Math.floor(smallWidth * 0.5));
-  const windowHeight = Math.max(1, Math.floor(smallHeight * 0.5));
-  let bestScore = Number.NEGATIVE_INFINITY;
-  let bestX = smallWidth / 2;
-  let bestY = smallHeight / 2;
-  for (let y = 0; y + windowHeight <= smallHeight; y += 1) {
-    for (let x = 0; x + windowWidth <= smallWidth; x += 1) {
-      let total = 0;
-      for (let dy = 0; dy < windowHeight; dy += 1) {
-        for (let dx = 0; dx < windowWidth; dx += 1)
-          total += scores[(y + dy) * smallWidth + x + dx] as number;
-      }
-      if (total > bestScore) {
-        bestScore = total;
-        bestX = x + windowWidth / 2;
-        bestY = y + windowHeight / 2;
-      }
-    }
-  }
-  return [bestX / smallWidth, bestY / smallHeight];
-}
-
-function lumaAt(image: RgbaImage, index: number): number {
-  return (
-    0.299 * (image.data[index] as number) +
-    0.587 * (image.data[index + 1] as number) +
-    0.114 * (image.data[index + 2] as number)
-  );
 }
 
 function toRgbaImage(surface: Surface): RgbaImage {
@@ -807,7 +676,7 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
 
     async metadata(input: ImageInput, context): Promise<ImageMetadata> {
       assertNotAborted(context?.signal, "metadata");
-      if (isRawImage(input)) {
+      if (isRawImageData(input)) {
         return {
           width: input.width,
           height: input.height,

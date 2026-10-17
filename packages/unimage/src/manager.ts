@@ -16,10 +16,7 @@ import type {
   RawImageSequence,
 } from "./types";
 import { sniffImageFormat } from "./utils/format";
-
-function isRawImage(input: ImageInput): boolean {
-  return typeof input === "object" && input !== null && "layout" in input;
-}
+import { isRawImageData } from "./utils/input";
 
 function assertDecodeOptions(options?: ImageInputDecodeOptions): void {
   const density = options?.rasterDensity;
@@ -28,6 +25,15 @@ function assertDecodeOptions(options?: ImageInputDecodeOptions): void {
       code: "UNIMAGE_INVALID_RECIPE",
     });
   }
+}
+
+function toDecodeRequest(
+  config?: ImageInputDecodeOptions & { signal?: AbortSignal },
+): ImageDecodeRequest {
+  return {
+    ...(config?.rasterDensity === undefined ? {} : { rasterDensity: config.rasterDensity }),
+    ...(config?.signal === undefined ? {} : { signal: config.signal }),
+  };
 }
 
 export function createImageManager(options: ImageManagerOptions): ImageManager {
@@ -96,9 +102,7 @@ export function createImageManager(options: ImageManagerOptions): ImageManager {
           operation: "decode",
         });
       }
-      const request: ImageDecodeRequest = {};
-      if (config?.rasterDensity !== undefined) request.rasterDensity = config.rasterDensity;
-      if (config?.signal !== undefined) request.signal = config.signal;
+      const request = toDecodeRequest(config);
       try {
         return await driver.decode(input, request);
       } catch (error) {
@@ -117,9 +121,7 @@ export function createImageManager(options: ImageManagerOptions): ImageManager {
           operation: "decodeFrames",
         });
       }
-      const request: ImageDecodeRequest = {};
-      if (config?.rasterDensity !== undefined) request.rasterDensity = config.rasterDensity;
-      if (config?.signal !== undefined) request.signal = config.signal;
+      const request = toDecodeRequest(config);
       try {
         return await driver.decodeFrames(input, request);
       } catch (error) {
@@ -133,7 +135,7 @@ export function createImageManager(options: ImageManagerOptions): ImageManager {
       config?: { signal?: AbortSignal },
     ): Promise<ImageResult> {
       const parsedRecipe = parseImageRecipe(recipe);
-      const sourceFormat = isRawImage(input) ? undefined : await sniffImageFormat(input);
+      const sourceFormat = isRawImageData(input) ? undefined : await sniffImageFormat(input);
       const declaredFormat = parsedRecipe.input?.format;
       if (declaredFormat !== undefined && declaredFormat !== sourceFormat) {
         throw new UnImageError("The declared input format does not match the source image.", {

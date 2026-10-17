@@ -17,7 +17,9 @@ import type {
 import { assertNotAborted } from "../utils/abort";
 import { applyPixelFilter, parseColor } from "../utils/filters";
 import { sniffImageFormat } from "../utils/format";
-import { decodeSvg, parseSvgMetadata } from "./svgo";
+import { alignedOrigin, focusPoint } from "../utils/geometry";
+import { isRawImageData } from "../utils/input";
+import { decodeSvg, parseSvgMetadata } from "../utils/svg";
 
 interface NapiTransformer {
   metadata(withExif?: boolean | null, signal?: AbortSignal | null): Promise<NapiImageMetadata>;
@@ -132,17 +134,6 @@ const mediaTypes: Record<ImageFormat, string> = {
   webp: "image/webp",
   avif: "image/avif",
 };
-
-function isRawImage(input: ImageInput): input is RawImageData {
-  return (
-    typeof input === "object" &&
-    input !== null &&
-    "data" in input &&
-    "width" in input &&
-    "height" in input &&
-    "layout" in input
-  );
-}
 
 function formatFromNapi(value: string): ImageFormat | undefined {
   const normalized = value.trim().toLowerCase();
@@ -300,7 +291,7 @@ async function filterPixels(
 
 async function createTransformer(module: NapiModule, input: ImageInput): Promise<NapiTransformer> {
   try {
-    if (isRawImage(input)) {
+    if (isRawImageData(input)) {
       const expected = input.width * input.height * 4;
       if (input.layout !== "rgba8" || input.data.length < expected) {
         throw new UnImageError("Raw image data does not match its declared dimensions.", {
@@ -456,90 +447,7 @@ function coverCropOrigin(
       Math.max(0, Math.min(scaledHeight - targetHeight, y)),
     ];
   }
-  const x =
-    position === "left" || position === "left top" || position === "left bottom"
-      ? 0
-      : position === "right" || position === "right top" || position === "right bottom"
-        ? scaledWidth - targetWidth
-        : Math.floor((scaledWidth - targetWidth) / 2);
-  const y =
-    position === "top" || position === "left top" || position === "right top"
-      ? 0
-      : position === "bottom" || position === "left bottom" || position === "right bottom"
-        ? scaledHeight - targetHeight
-        : Math.floor((scaledHeight - targetHeight) / 2);
-  return [x, y];
-}
-function smartFocus(
-  image: { data: Uint8Array; width: number; height: number },
-  mode: "entropy" | "attention",
-): [number, number] {
-  const stride = Math.max(1, Math.ceil(Math.max(image.width, image.height) / 256));
-  const smallWidth = Math.max(1, Math.floor(image.width / stride));
-  const smallHeight = Math.max(1, Math.floor(image.height / stride));
-  const scores = new Float64Array(smallWidth * smallHeight);
-  const lumaAt = (x: number, y: number): number => {
-    const index =
-      (Math.max(0, Math.min(image.height - 1, y)) * image.width +
-        Math.max(0, Math.min(image.width - 1, x))) *
-      4;
-    return (
-      0.299 * (image.data[index] as number) +
-      0.587 * (image.data[index + 1] as number) +
-      0.114 * (image.data[index + 2] as number)
-    );
-  };
-  for (let y = 0; y < smallHeight; y += 1) {
-    for (let x = 0; x < smallWidth; x += 1) {
-      const sourceX = Math.min(image.width - 1, x * stride);
-      const sourceY = Math.min(image.height - 1, y * stride);
-      if (mode === "attention") {
-        const left = lumaAt(sourceX - stride, sourceY);
-        const right = lumaAt(sourceX + stride, sourceY);
-        const up = lumaAt(sourceX, sourceY - stride);
-        const down = lumaAt(sourceX, sourceY + stride);
-        scores[y * smallWidth + x] = Math.abs(right - left) + Math.abs(down - up);
-      } else {
-        let entropy = 0;
-        const histogram = new Map<number, number>();
-        const radius = 4;
-        let total = 0;
-        for (let dy = -radius; dy <= radius; dy += radius) {
-          for (let dx = -radius; dx <= radius; dx += radius) {
-            const value = Math.round(lumaAt(sourceX + dx * stride, sourceY + dy * stride));
-            histogram.set(value, (histogram.get(value) ?? 0) + 1);
-            total += 1;
-          }
-        }
-        for (const count of histogram.values()) {
-          const probability = count / total;
-          entropy -= probability * Math.log2(probability);
-        }
-        scores[y * smallWidth + x] = entropy;
-      }
-    }
-  }
-
-  const windowWidth = Math.max(1, Math.floor(smallWidth * 0.5));
-  const windowHeight = Math.max(1, Math.floor(smallHeight * 0.5));
-  let bestScore = Number.NEGATIVE_INFINITY;
-  let bestX = smallWidth / 2;
-  let bestY = smallHeight / 2;
-  for (let y = 0; y + windowHeight <= smallHeight; y += 1) {
-    for (let x = 0; x + windowWidth <= smallWidth; x += 1) {
-      let total = 0;
-      for (let dy = 0; dy < windowHeight; dy += 1) {
-        for (let dx = 0; dx < windowWidth; dx += 1)
-          total += scores[(y + dy) * smallWidth + x + dx] as number;
-      }
-      if (total > bestScore) {
-        bestScore = total;
-        bestX = x + windowWidth / 2;
-        bestY = y + windowHeight / 2;
-      }
-    }
-  }
-  return [bestX / smallWidth, bestY / smallHeight];
+  return alignedOrigin(position, scaledWidth - targetWidth, scaledHeight - targetHeight);
 }
 
 async function applyOperation(
@@ -584,7 +492,7 @@ async function applyOperation(
         let focus: readonly [number, number] | undefined;
         if (operation.position === "entropy" || operation.position === "attention") {
           const scaled = await readRgbaState(transformer, signal);
-          focus = smartFocus(
+          focus = focusPoint(
             { data: scaled.state.data, width: scaled.state.width, height: scaled.state.height },
             operation.position === "entropy" ? "entropy" : "attention",
           );
@@ -611,19 +519,11 @@ async function applyOperation(
           fit: resizeFitFill,
         });
         const [red, green, blue, alpha] = parseColor(operation.background ?? "#000000");
-        const position = operation.position;
-        const x =
-          position === "left" || position === "left top" || position === "left bottom"
-            ? 0
-            : position === "right" || position === "right top" || position === "right bottom"
-              ? target.width - containedWidth
-              : Math.floor((target.width - containedWidth) / 2);
-        const y =
-          position === "top" || position === "left top" || position === "right top"
-            ? 0
-            : position === "bottom" || position === "left bottom" || position === "right bottom"
-              ? target.height - containedHeight
-              : Math.floor((target.height - containedHeight) / 2);
+        const [x, y] = alignedOrigin(
+          operation.position,
+          target.width - containedWidth,
+          target.height - containedHeight,
+        );
         const padded = filterPixels(transformer, signal, {
           type: "extend",
           top: Math.max(0, y),
@@ -1145,7 +1045,7 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
     },
 
     async metadata(input, context): Promise<ImageMetadata> {
-      if (isRawImage(input)) {
+      if (isRawImageData(input)) {
         return normalizeMetadata(
           {
             width: input.width,
