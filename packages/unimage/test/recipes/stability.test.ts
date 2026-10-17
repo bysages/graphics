@@ -1,3 +1,6 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+
 import sharp from "sharp";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -159,6 +162,26 @@ describe("public API stability", () => {
     await expect(driver.getItemRaw?.("http://localhost/source.png", {})).rejects.toMatchObject({
       status: 403,
     });
+  });
+
+  it("passes pinned DNS addresses to Node fetchers", async () => {
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "image/png");
+      response.setHeader("connection", "close");
+      response.end(new Uint8Array([137, 80, 78, 71]));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, () => resolve());
+    });
+    try {
+      const { port } = server.address() as AddressInfo;
+      const driver = httpDriver({ allowAllDomains: true });
+      const data = await driver.getItemRaw?.(`http://localhost:${port}/source.png`, {});
+      expect(data).toBeInstanceOf(Uint8Array);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

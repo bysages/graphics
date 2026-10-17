@@ -186,19 +186,27 @@ export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => 
     }
     const pinnedLookup: NonNullable<import("node:http").RequestOptions["lookup"]> = (
       _hostname,
-      requestFamily,
+      requestOptions,
       callback,
     ) => {
-      const wanted = typeof requestFamily === "number" ? requestFamily : 0;
-      const address =
-        wanted === 0
-          ? addresses[0]
-          : (addresses.find((item) => item.family === wanted) ?? addresses[0]);
-      if (address === undefined) {
+      const wanted =
+        requestOptions.family === "IPv4"
+          ? 4
+          : requestOptions.family === "IPv6"
+            ? 6
+            : typeof requestOptions.family === "number"
+              ? requestOptions.family
+              : 0;
+      const matched = wanted === 0 ? addresses : addresses.filter((item) => item.family === wanted);
+      if (matched.length === 0) {
         callback(new Error(`No pinned address for ${url.hostname}`), "", 4);
         return;
       }
-      callback(null, address.address, address.family);
+      if (requestOptions.all === true) {
+        callback(null, [...matched]);
+        return;
+      }
+      callback(null, matched[0]!.address, matched[0]!.family);
     };
 
     const incomingHeaders = new Headers(init?.headers);
@@ -218,6 +226,8 @@ export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => 
       ...(url.protocol === "https:" ? { serverName: url.hostname } : {}),
       ...(signal === undefined ? {} : { signal }),
     });
+
+    request.end();
 
     return await new Promise<Response>((resolve, reject) => {
       request.on("error", () => {});

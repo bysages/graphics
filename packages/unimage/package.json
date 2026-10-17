@@ -1,6 +1,6 @@
 {
   "name": "unimage",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Unified image processing API for browsers and Node.js with typed operation recipes and pluggable drivers",
   "keywords": [
     "avif",
