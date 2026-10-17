@@ -61,14 +61,13 @@
     "test": "vp test run"
   },
   "dependencies": {
-    "h3": "2.0.2",
-    "ipdo": "0.0.6",
-    "unpalette": "workspace:*",
-    "unstorage": "1.17.5"
+    "unpalette": "workspace:*"
   },
   "devDependencies": {
     "@napi-rs/canvas": "1.0.11",
     "@napi-rs/image": "1.15.0",
+    "h3": "2.0.2",
+    "ipdo": "0.0.6",
     "sharp": "0.35.5",
     "svgo": "4.1.0",
     "unstorage": "1.17.5"
@@ -76,8 +75,10 @@
   "peerDependencies": {
     "@napi-rs/canvas": ">=1.0 <2",
     "@napi-rs/image": ">=1.15 <2",
+    "h3": ">=2.0 <3",
     "sharp": "^0.35.0",
-    "svgo": "^4.1.0"
+    "svgo": "^4.1.0",
+    "unstorage": ">=1.17 <2"
   },
   "peerDependenciesMeta": {
     "@napi-rs/canvas": {
@@ -86,10 +87,16 @@
     "@napi-rs/image": {
       "optional": true
     },
+    "h3": {
+      "optional": true
+    },
     "sharp": {
       "optional": true
     },
     "svgo": {
+      "optional": true
+    },
+    "unstorage": {
       "optional": true
     }
   },

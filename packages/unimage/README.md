@@ -31,7 +31,7 @@ yarn add unimage
 bun add unimage
 ```
 
-Core runtime dependencies are `h3`, `unpalette`, and `unstorage`. Image engines are optional peer dependencies — install what you use:
+The core runtime dependency is only `unpalette`. Image engines and server integrations are optional peer dependencies — install what you use. Small server-only utilities that do not expose shared contracts are bundled:
 
 | You want                                                            | Install                               |
 | ------------------------------------------------------------------- | ------------------------------------- |
@@ -41,6 +41,7 @@ Core runtime dependencies are `h3`, `unpalette`, and `unstorage`. Image engines 
 | Canvas2D in the browser and Node                                    | `pnpm add @napi-rs/canvas`            |
 | sharp WASM fallback for multi-threaded Wasm runtimes (not browsers) | `pnpm add sharp @img/sharp-wasm32`    |
 | SVG optimization                                                    | `pnpm add svgo`                       |
+| Server adapter (`unimage/server`)                                   | `pnpm add h3 unstorage`               |
 
 ## Quick Start
 

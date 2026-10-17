@@ -29,18 +29,9 @@ importers:
 
   packages/unimage:
     dependencies:
-      h3:
-        specifier: 2.0.2
-        version: 2.0.2
-      ipdo:
-        specifier: 0.0.6
-        version: 0.0.6
       unpalette:
         specifier: workspace:*
         version: link:../unpalette
-      unstorage:
-        specifier: 1.17.5
-        version: 1.17.5
     devDependencies:
       '@napi-rs/canvas':
         specifier: 1.0.11
@@ -48,12 +39,21 @@ importers:
       '@napi-rs/image':
         specifier: 1.15.0
         version: 1.15.0
+      h3:
+        specifier: 2.0.2
+        version: 2.0.2
+      ipdo:
+        specifier: 0.0.6
+        version: 0.0.6
       sharp:
         specifier: 0.35.5
         version: 0.35.5(@types/node@26.6.5)
       svgo:
         specifier: 4.1.0
         version: 4.1.0
+      unstorage:
+        specifier: 1.17.5
+        version: 1.17.5
 
   packages/unpalette: {}
 

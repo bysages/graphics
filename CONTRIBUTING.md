@@ -47,7 +47,7 @@ Prerequisites: Node.js 20+, pnpm 10. The browser playground lives in `playground
 
 ### Dependencies
 
-- Package cores stay lean: engines (`sharp`, `@napi-rs/image`, `svgo`) and integrations (`unstorage`) are optional peer dependencies
+- Package cores stay lean: engines (`sharp`, `@napi-rs/image`, `svgo`) and server integrations (`h3`, `unstorage`) are optional peer dependencies
 - IO belongs in explicit drivers; storage delegates to unstorage
 
 ## PR Checklist
