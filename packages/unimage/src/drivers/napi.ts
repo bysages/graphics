@@ -14,6 +14,7 @@ import type {
   RawImageFrame,
   RawImageData,
 } from "../types";
+import { assertNotAborted } from "../utils/abort";
 import { applyPixelFilter, parseColor } from "../utils/filters";
 import { sniffImageFormat } from "../utils/format";
 import { decodeSvg, parseSvgMetadata } from "./svgo";
@@ -83,8 +84,8 @@ export interface NapiModule {
 
 export interface NapiDriverOptions {
   /**
-   * Node normally resolves the native module automatically. Browser and Edge
-   * runtimes should inject the WASI build after its asynchronous initialization.
+   * Inject a resolved `@napi-rs/image` module. When omitted, the official
+   * package loader selects the appropriate backend.
    */
   lib?: NapiModule | (() => NapiModule | Promise<NapiModule>);
 }
@@ -103,7 +104,18 @@ const orientationRotate90Cw = 6;
 const orientationRotate270Cw = 8;
 const alphaColorTypes = new Set([1, 3, 5, 7, 9]);
 
-const formats: readonly ImageFormat[] = ["png", "jpeg", "webp", "avif"];
+const formats: readonly ImageFormat[] = [
+  "png",
+  "jpeg",
+  "webp",
+  "avif",
+  "tiff",
+  "bmp",
+  "ico",
+  "pnm",
+  "heif",
+  "heic",
+];
 const mediaTypes: Record<ImageFormat, string> = {
   bmp: "image/bmp",
   ico: "image/x-icon",
@@ -139,28 +151,43 @@ function formatFromNapi(value: string): ImageFormat | undefined {
     : undefined;
 }
 
-function checkAborted(signal: AbortSignal | undefined, stage: string): void {
-  if (signal?.aborted) {
-    throw new UnImageError(`Image ${stage} was aborted.`, { code: "UNIMAGE_ABORT" });
+function normalizeNapiModule(module: unknown): NapiModule | undefined {
+  const candidate = module as
+    | NapiModule
+    | { default?: NapiModule | { Transformer?: unknown } }
+    | undefined;
+  if (!candidate) return undefined;
+  if ("Transformer" in candidate) return candidate as NapiModule;
+  const fallback = candidate.default;
+  return fallback && "Transformer" in fallback ? (fallback as NapiModule) : undefined;
+}
+
+let napiModuleCache: Promise<NapiModule> | undefined;
+
+async function importNapiModule(name: string): Promise<NapiModule> {
+  const normalized = normalizeNapiModule(await import(name));
+  if (normalized === undefined) {
+    throw new TypeError(`The "${name}" module does not export an image Transformer.`);
   }
+  return normalized;
 }
 
 async function loadModule(options: NapiDriverOptions): Promise<NapiModule> {
   if (typeof options.lib === "function") return await options.lib();
   if (options.lib) return options.lib;
-
-  try {
-    return (await import("@napi-rs/image")) as NapiModule;
-  } catch (error) {
+  napiModuleCache ??= importNapiModule("@napi-rs/image").catch((error: unknown) => {
     throw new UnImageError(
-      'The "@napi-rs/image" driver dependency is unavailable in this runtime.',
+      'The "@napi-rs/image" loader could not select a backend. Install the optional "@napi-rs/image-wasm32-wasi" package for WASI support.',
       {
         code: "UNIMAGE_DRIVER_UNAVAILABLE",
         cause: error,
       },
     );
-  }
+  });
+  return napiModuleCache;
 }
+
+const nativeEndianLittle = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
 function normalizeRawToRgba(
   data: Uint8Array,
@@ -171,43 +198,104 @@ function normalizeRawToRgba(
   const pixels = width * height;
   if (colorType === 3) return data;
   const output = new Uint8Array(pixels * 4);
-  if (colorType === 0) {
-    for (let index = 0; index < pixels; index += 1) {
-      const value = data[index]!;
+  const sixteenBit = colorType >= 4 && colorType <= 7;
+  const view = sixteenBit ? new DataView(data.buffer, data.byteOffset, data.byteLength) : undefined;
+  const channel = (index: number): number => {
+    if (view !== undefined) {
+      return Math.round(view.getUint16(index * 2, nativeEndianLittle) / 257);
+    }
+    return data[index]!;
+  };
+  const floatChannel = (index: number): number =>
+    Math.max(0, Math.min(255, Math.round((data[index] ?? 0) * 255)));
+
+  for (let index = 0; index < pixels; index += 1) {
+    if (colorType === 0 || colorType === 4) {
+      const value = channel(index);
       output.set([value, value, value, 255], index * 4);
+      continue;
     }
-    return output;
-  }
-  if (colorType === 1) {
-    for (let index = 0; index < pixels; index += 1) {
-      const value = data[index * 2]!;
-      output.set([value, value, value, data[index * 2 + 1]!], index * 4);
+    if (colorType === 1 || colorType === 5) {
+      const value = channel(index);
+      output.set([value, value, value, channel(pixels + index)], index * 4);
+      continue;
     }
-    return output;
-  }
-  if (colorType === 2) {
-    for (let index = 0; index < pixels; index += 1) {
-      output.set([data[index * 3]!, data[index * 3 + 1]!, data[index * 3 + 2]!, 255], index * 4);
+    if (colorType === 2 || colorType === 6) {
+      const offset = colorType === 6 ? index * 4 : index * 3;
+      output.set([channel(offset), channel(offset + 1), channel(offset + 2), 255], index * 4);
+      continue;
     }
-    return output;
+    if (colorType === 7) {
+      const offset = index * 4;
+      output.set(
+        [channel(offset), channel(offset + 1), channel(offset + 2), channel(offset + 3)],
+        index * 4,
+      );
+      continue;
+    }
+    if (colorType === 8) {
+      output.set(
+        [floatChannel(index * 3), floatChannel(index * 3 + 1), floatChannel(index * 3 + 2), 255],
+        index * 4,
+      );
+      continue;
+    }
+    if (colorType === 9) {
+      output.set(
+        [
+          floatChannel(index * 4),
+          floatChannel(index * 4 + 1),
+          floatChannel(index * 4 + 2),
+          floatChannel(index * 4 + 3),
+        ],
+        index * 4,
+      );
+      continue;
+    }
+    throw new UnImageError("Napi-image returned an unsupported raw pixel layout.", {
+      code: "UNIMAGE_DECODE",
+    });
   }
-  throw new UnImageError("Napi-image returned an unsupported raw pixel layout.", {
-    code: "UNIMAGE_DECODE",
-  });
+  return output;
+}
+
+async function readRgbaState(
+  transformer: NapiTransformer,
+  signal: AbortSignal | undefined,
+): Promise<{
+  state: RawImageData;
+  metadata: ImageMetadata;
+  colorType: number;
+}> {
+  const nativeMetadata = await transformer.metadata(false, signal);
+  const metadata = normalizeMetadata(nativeMetadata);
+  const raw = new Uint8Array(await transformer.rawPixels(signal));
+  return {
+    colorType: nativeMetadata.colorType,
+    metadata,
+    state: {
+      data: normalizeRawToRgba(raw, metadata.width, metadata.height, nativeMetadata.colorType),
+      width: metadata.width,
+      height: metadata.height,
+      layout: "rgba8",
+    },
+  };
 }
 
 async function toRgbaState(
   transformer: NapiTransformer,
   signal: AbortSignal | undefined,
 ): Promise<RawImageData> {
-  const metadata = await transformer.metadata(false, signal);
-  const raw = new Uint8Array(await transformer.rawPixels(signal));
-  return {
-    data: normalizeRawToRgba(raw, metadata.width, metadata.height, metadata.colorType),
-    width: metadata.width,
-    height: metadata.height,
-    layout: "rgba8",
-  };
+  return (await readRgbaState(transformer, signal)).state;
+}
+
+async function filterPixels(
+  transformer: NapiTransformer,
+  signal: AbortSignal | undefined,
+  operation: Parameters<typeof applyPixelFilter>[1],
+) {
+  const current = await toRgbaState(transformer, signal);
+  return applyPixelFilter(current, operation);
 }
 
 async function createTransformer(module: NapiModule, input: ImageInput): Promise<NapiTransformer> {
@@ -455,12 +543,11 @@ function smartFocus(
 }
 
 async function applyOperation(
-  module: NapiModule,
   transformer: NapiTransformer,
   operation: ImageOperation,
   signal: AbortSignal | undefined,
-): Promise<ImageInput | void> {
-  checkAborted(signal, "transform");
+): Promise<RawImageData | void> {
+  assertNotAborted(signal, "transform");
 
   switch (operation.type) {
     case "autoOrient":
@@ -496,10 +583,9 @@ async function applyOperation(
         });
         let focus: readonly [number, number] | undefined;
         if (operation.position === "entropy" || operation.position === "attention") {
-          const scaled = await transformer.metadata(false, signal);
-          const raw = await transformer.rawPixels(signal);
+          const scaled = await readRgbaState(transformer, signal);
           focus = smartFocus(
-            { data: new Uint8Array(raw), width: scaled.width, height: scaled.height },
+            { data: scaled.state.data, width: scaled.state.width, height: scaled.state.height },
             operation.position === "entropy" ? "entropy" : "attention",
           );
         }
@@ -524,7 +610,6 @@ async function applyOperation(
           filter,
           fit: resizeFitFill,
         });
-        const raw = await transformer.rawPixels(signal);
         const [red, green, blue, alpha] = parseColor(operation.background ?? "#000000");
         const position = operation.position;
         const x =
@@ -539,27 +624,18 @@ async function applyOperation(
             : position === "bottom" || position === "left bottom" || position === "right bottom"
               ? target.height - containedHeight
               : Math.floor((target.height - containedHeight) / 2);
+        const padded = filterPixels(transformer, signal, {
+          type: "extend",
+          top: Math.max(0, y),
+          right: Math.max(0, target.width - containedWidth - x),
+          bottom: Math.max(0, target.height - containedHeight - y),
+          left: Math.max(0, x),
+          background: `rgba(${red}, ${green}, ${blue}, ${alpha / 255})`,
+        });
         return {
-          kind: undefined,
-          data: applyPixelFilter(
-            {
-              data: new Uint8Array(raw),
-              width: containedWidth,
-              height: containedHeight,
-            },
-            {
-              type: "extend",
-              top: Math.max(0, y),
-              right: Math.max(0, target.width - containedWidth - x),
-              bottom: Math.max(0, target.height - containedHeight - y),
-              left: Math.max(0, x),
-              background: `rgba(${red}, ${green}, ${blue}, ${alpha / 255})`,
-            },
-          ).data,
-          width: target.width,
-          height: target.height,
+          ...(await padded),
           layout: "rgba8",
-        } as RawImageData;
+        };
       }
       const fit = (operation.fit ?? "cover") === "cover" ? resizeFitCover : resizeFitFill;
       transformer.resize({ width: target.width, height: target.height, filter, fit });
@@ -598,19 +674,10 @@ async function applyOperation(
       return;
     case "sharpen":
       if (operation.flat !== undefined) {
-        const current = await transformer.metadata(false, signal);
-        const raw = await transformer.rawPixels(signal);
-        const filtered = applyPixelFilter(
-          { data: new Uint8Array(raw), width: current.width, height: current.height },
-          operation,
-        );
         return {
-          kind: undefined,
-          data: filtered.data,
-          width: filtered.width,
-          height: filtered.height,
+          ...(await filterPixels(transformer, signal, operation)),
           layout: "rgba8",
-        } as RawImageData;
+        };
       }
       transformer.unsharpen(operation.sigma ?? 1, operation.jagged ?? 0);
       return;
@@ -628,25 +695,16 @@ async function applyOperation(
         transformer.filter3x3([...operation.kernel]);
         return;
       }
-      const current = await transformer.metadata(false, signal);
-      const raw = await transformer.rawPixels(signal);
       return {
-        kind: undefined,
-        data: applyPixelFilter(
-          { data: new Uint8Array(raw), width: current.width, height: current.height },
-          operation,
-        ).data,
-        width: current.width,
-        height: current.height,
+        ...(await filterPixels(transformer, signal, operation)),
         layout: "rgba8",
-      } as RawImageData;
+      };
     }
     case "removeAlpha":
     case "ensureAlpha": {
-      const current = await transformer.metadata(false, signal);
-      const raw = await transformer.rawPixels(signal);
+      const current = await toRgbaState(transformer, signal);
       const filtered = applyPixelFilter(
-        { data: new Uint8Array(raw), width: current.width, height: current.height },
+        current,
         operation as Extract<ImageOperation, { type: "removeAlpha" | "ensureAlpha" }>,
       );
       return {
@@ -674,12 +732,8 @@ async function applyOperation(
     case "linear":
     case "modulate":
     case "tint": {
-      const current = await transformer.metadata(false, signal);
-      const raw = await transformer.rawPixels(signal);
-      const filtered = applyPixelFilter(
-        { data: new Uint8Array(raw), width: current.width, height: current.height },
-        operation,
-      );
+      const current = await toRgbaState(transformer, signal);
+      const filtered = applyPixelFilter(current, operation);
       return {
         kind: undefined,
         data: filtered.data,
@@ -699,7 +753,7 @@ async function encode(
   lossless: boolean | undefined,
   signal: AbortSignal | undefined,
 ): Promise<Uint8Array> {
-  checkAborted(signal, "encode");
+  assertNotAborted(signal, "encode");
 
   if (format === "png") return await transformer.png(undefined, signal);
   if (format === "jpeg") return await transformer.jpeg(quality, signal);
@@ -731,9 +785,9 @@ async function encode(
 
   if (format === "heic") {
     try {
-      const heicOptions: import("@napi-rs/image").HeicConfig = {};
-      if (quality !== undefined) heicOptions.quality = quality;
-      return await transformer.heic(heicOptions, signal);
+      const heifOptions: import("@napi-rs/image").HeicConfig = {};
+      if (quality !== undefined) heifOptions.quality = quality;
+      return await transformer.heic(heifOptions, signal);
     } catch (error) {
       if (signal?.aborted) {
         throw new UnImageError("Image encode was aborted.", {
@@ -761,249 +815,275 @@ async function encode(
 }
 
 export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
+  let capabilitiesPromise: Promise<ImageCapabilities> | undefined;
+
+  async function probeHeicEncoding(module: NapiModule): Promise<boolean> {
+    try {
+      const transformer = module.Transformer.fromRgbaPixels(new Uint8Array(2 * 2 * 4), 2, 2);
+      await transformer.heic({ quality: 80 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   return {
     name: "napi",
 
-    capabilities(): Promise<ImageCapabilities> {
-      return Promise.resolve({
-        driver: "napi",
-        formats: {
-          png: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
+    async capabilities(): Promise<ImageCapabilities> {
+      capabilitiesPromise ??= (async () => {
+        const module = await loadModule(options);
+        const heicEncoding = await probeHeicEncoding(module);
+        return {
+          driver: "napi",
+          formats: {
+            png: {
+              decode: {
+                pixelFormats: ["rgba8"],
+                frames: ["still"],
+                orientation: false,
+                rasterDensity: false,
+                vector: false,
+              },
+              encode: {
+                compressionModes: ["lossless"],
+                quality: false,
+                animation: false,
+                metadataPolicies: ["strip"],
+                sanitize: false,
+              },
             },
-            encode: {
-              compressionModes: ["lossless"],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
+            jpeg: {
+              decode: {
+                pixelFormats: ["rgba8"],
+                frames: ["still"],
+                orientation: true,
+                rasterDensity: false,
+                vector: false,
+              },
+              encode: {
+                compressionModes: ["lossy"],
+                quality: true,
+                animation: false,
+                metadataPolicies: ["strip"],
+                sanitize: false,
+              },
+            },
+            webp: {
+              decode: {
+                pixelFormats: ["rgba8"],
+                frames: ["still"],
+                orientation: true,
+                rasterDensity: false,
+                vector: false,
+              },
+              encode: {
+                compressionModes: ["lossy", "lossless"],
+                quality: true,
+                animation: false,
+                metadataPolicies: ["strip"],
+                sanitize: false,
+              },
+            },
+            avif: {
+              decode: {
+                pixelFormats: ["rgba8"],
+                frames: ["still"],
+                orientation: true,
+                rasterDensity: false,
+                vector: false,
+              },
+              encode: {
+                compressionModes: ["lossy", "lossless"],
+                quality: true,
+                animation: false,
+                metadataPolicies: ["strip"],
+                sanitize: false,
+              },
+            },
+            svg: {
+              decode: {
+                pixelFormats: ["rgba8"],
+                frames: ["still"],
+                orientation: false,
+                rasterDensity: false,
+                vector: true,
+              },
+              encode: {
+                compressionModes: [],
+                quality: false,
+                animation: false,
+                metadataPolicies: ["strip"],
+                sanitize: false,
+              },
+            },
+            tiff: {
+              decode: {
+                pixelFormats: ["rgba8"],
+                frames: ["still"],
+                orientation: false,
+                rasterDensity: false,
+                vector: false,
+              },
+              encode: {
+                compressionModes: ["lossless"],
+                quality: false,
+                animation: false,
+                metadataPolicies: ["strip"],
+                sanitize: false,
+              },
+            },
+            bmp: {
+              decode: {
+                pixelFormats: ["rgba8"],
+                frames: ["still"],
+                orientation: false,
+                rasterDensity: false,
+                vector: false,
+              },
+              encode: {
+                compressionModes: ["lossless"],
+                quality: false,
+                animation: false,
+                metadataPolicies: ["strip"],
+                sanitize: false,
+              },
+            },
+            ico: {
+              decode: {
+                pixelFormats: ["rgba8"],
+                frames: ["still"],
+                orientation: false,
+                rasterDensity: false,
+                vector: false,
+              },
+              encode: {
+                compressionModes: ["lossless"],
+                quality: false,
+                animation: false,
+                metadataPolicies: ["strip"],
+                sanitize: false,
+              },
+            },
+            pnm: {
+              decode: {
+                pixelFormats: ["rgba8"],
+                frames: ["still"],
+                orientation: false,
+                rasterDensity: false,
+                vector: false,
+              },
+              encode: {
+                compressionModes: ["lossless"],
+                quality: false,
+                animation: false,
+                metadataPolicies: ["strip"],
+                sanitize: false,
+              },
+            },
+            tga: {
+              decode: {
+                pixelFormats: [],
+                frames: ["still"],
+                orientation: false,
+                rasterDensity: false,
+                vector: false,
+              },
+              encode: {
+                compressionModes: ["lossless"],
+                quality: false,
+                animation: false,
+                metadataPolicies: ["strip"],
+                sanitize: false,
+              },
+            },
+            heic: {
+              decode: {
+                pixelFormats: ["rgba8"],
+                frames: ["still"],
+                orientation: false,
+                rasterDensity: false,
+                vector: false,
+              },
+              encode: {
+                compressionModes: heicEncoding ? ["lossy"] : [],
+                quality: heicEncoding,
+                animation: false,
+                metadataPolicies: ["strip"],
+                sanitize: false,
+              },
+            },
+            heif: {
+              decode: {
+                pixelFormats: ["rgba8"],
+                frames: ["still"],
+                orientation: false,
+                rasterDensity: false,
+                vector: false,
+              },
+              // napi-image exposes a HEIC encoder, but no independent general HEIF encoder.
+              encode: {
+                compressionModes: [],
+                quality: false,
+                animation: false,
+                metadataPolicies: ["strip"],
+                sanitize: false,
+              },
             },
           },
-          jpeg: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: true,
-              rasterDensity: false,
-              vector: false,
+          metadataRead: true,
+          operations: {
+            autoOrient: { supported: true },
+            resize: { supported: true },
+            crop: { supported: true },
+            rotate: {
+              supported: true,
+              notes: ["Only multiples of 90 degrees are supported."],
             },
-            encode: {
-              compressionModes: ["lossy"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
+            flip: { supported: true },
+            grayscale: { supported: true },
+            invert: { supported: true },
+            blur: { supported: true },
+            trim: { supported: true },
+            extend: { supported: true },
+            sharpen: { supported: true },
+            clahe: { supported: true },
+            median: { supported: true },
+            dilate: { supported: true },
+            erode: { supported: true },
+            flatten: { supported: true },
+            unflatten: { supported: true },
+            gamma: { supported: true },
+            normalize: { supported: true },
+            threshold: { supported: true },
+            linear: { supported: true },
+            modulate: { supported: true },
+            opacity: { supported: true },
+            tint: { supported: true },
+            contrast: { supported: true },
+            convolve: {
+              supported: true,
+              notes: ["Only unscaled 3×3 kernels are supported."],
             },
+            removeAlpha: { supported: true },
+            ensureAlpha: { supported: true },
           },
-          webp: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: true,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy", "lossless"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          avif: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: true,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy", "lossless"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          svg: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: true,
-            },
-            encode: {
-              compressionModes: [],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          tiff: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossless"],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          bmp: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossless"],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          ico: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossless"],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          pnm: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossless"],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          tga: {
-            decode: {
-              pixelFormats: [],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossless"],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          heic: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          heif: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-        },
-        metadataRead: true,
-        operations: {
-          autoOrient: { supported: true },
-          resize: { supported: true },
-          crop: { supported: true },
-          rotate: {
-            supported: true,
-            notes: ["Only multiples of 90 degrees are supported."],
-          },
-          flip: { supported: true },
-          grayscale: { supported: true },
-          invert: { supported: true },
-          blur: { supported: true },
-          trim: { supported: true },
-          extend: { supported: true },
-          sharpen: { supported: true },
-          clahe: { supported: true },
-          median: { supported: true },
-          dilate: { supported: true },
-          erode: { supported: true },
-          flatten: { supported: true },
-          unflatten: { supported: true },
-          gamma: { supported: true },
-          normalize: { supported: true },
-          threshold: { supported: true },
-          linear: { supported: true },
-          modulate: { supported: true },
-          opacity: { supported: true },
-          tint: { supported: true },
-          contrast: { supported: true },
-          convolve: {
-            supported: true,
-            notes: ["Only unscaled 3×3 kernels are supported."],
-          },
-          removeAlpha: { supported: true },
-          ensureAlpha: { supported: true },
-        },
-        notes: [
-          "Operations are applied in recipe order through isolated stages.",
-          "SVG input is rasterized with a transparent background before transforms.",
-          "Metadata preservation is not supported yet.",
-        ],
-      });
+          notes: [
+            "Operations are applied in recipe order through isolated stages.",
+            "SVG input is rasterized with a transparent background before transforms.",
+            "Metadata preservation is not supported yet.",
+            ...(heicEncoding
+              ? []
+              : ["HEIC encoding is unavailable on this OS or codec installation."]),
+          ],
+        } as ImageCapabilities;
+      })();
+      try {
+        return await capabilitiesPromise;
+      } catch (error) {
+        capabilitiesPromise = undefined;
+        throw error;
+      }
     },
 
     async decode(input: ImageInput, request: ImageDecodeRequest): Promise<RawImageFrame> {
@@ -1017,8 +1097,8 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
       const module = await loadModule(options);
       const transformer = await createTransformer(module, input);
       try {
-        const meta = normalizeMetadata(await transformer.metadata(false, request.signal));
-        const data = await transformer.rawPixels(request.signal);
+        const { metadata: meta, state } = await readRgbaState(transformer, request.signal);
+        const data = state.data;
         return {
           data,
           width: meta.width,
@@ -1120,7 +1200,7 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
       for (const operation of recipe.operations) {
         const transformer = await createTransformer(module, state);
         try {
-          const nextState = await applyOperation(module, transformer, operation, context?.signal);
+          const nextState = await applyOperation(transformer, operation, context?.signal);
           if (nextState) {
             state = nextState;
             continue;

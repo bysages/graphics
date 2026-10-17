@@ -54,7 +54,8 @@ describe("napiDriver", () => {
     for (const format of Object.keys(capabilities.formats) as Array<
       keyof typeof capabilities.formats
     >) {
-      if (format === "svg") continue;
+      const capability = capabilities.formats[format];
+      if (format === "svg" || capability?.encode?.compressionModes.length === 0) continue;
       await expect(
         driver.checkRecipe({
           input: { frames: "first" },
@@ -63,6 +64,37 @@ describe("napiDriver", () => {
         }),
       ).resolves.toMatchObject({ supported: true });
     }
+  });
+
+  it("reports HEIF as decodable but not napi-encodable", async () => {
+    const capabilities = await driver.capabilities();
+    expect(capabilities.formats.heif?.decode?.pixelFormats).toContain("rgba8");
+    expect(capabilities.formats.heif?.encode?.compressionModes).toHaveLength(0);
+    await expect(
+      driver.checkRecipe({
+        input: { format: "heif", frames: "first" },
+        operations: [],
+        output: { format: "heif" },
+      }),
+    ).resolves.toMatchObject({ supported: false });
+    await expect(driver.transform(raw, recipe([], "heif"))).rejects.toMatchObject({
+      code: "UNIMAGE_UNSUPPORTED_FORMAT",
+      format: "heif",
+    });
+  });
+
+  it("encodes HEIC when the platform codec is available", async () => {
+    const capabilities = await driver.capabilities();
+    const supported = (capabilities.formats.heic?.encode?.compressionModes.length ?? 0) > 0;
+    if (!supported) {
+      await expect(driver.transform(raw, recipe([], "heic"))).rejects.toMatchObject({
+        format: "heic",
+      });
+      return;
+    }
+    const result = await driver.transform(raw, recipe([], "heic"));
+    expect(result.format).toBe("heic");
+    expect(result.mediaType).toBe("image/heic");
   });
 
   it("applies a pixel operation without changing dimensions", async () => {
@@ -119,6 +151,13 @@ describe("napiDriver", () => {
       code: "UNIMAGE_UNSUPPORTED_FORMAT",
       format: "jxl",
     });
+  });
+
+  it("reports metadata formats for expanded native encoders", async () => {
+    for (const format of ["tiff", "bmp", "ico", "pnm"] as const) {
+      const encoded = await driver.transform(raw, recipe([], format));
+      await expect(driver.metadata(encoded.data)).resolves.toMatchObject({ format });
+    }
   });
 
   it("rasterizes SVG input and parses SVG metadata without rasterizing", async () => {

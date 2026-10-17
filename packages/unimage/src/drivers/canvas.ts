@@ -44,6 +44,7 @@ interface NodeSurface {
   encode(format: "webp" | "jpeg", quality?: number): Promise<ArrayBuffer>;
   encode(format: "png"): Promise<ArrayBuffer>;
   encode(format: "avif", config?: { quality?: number }): Promise<ArrayBuffer>;
+  encode(format: "gif", quality?: number): Promise<ArrayBuffer>;
 }
 
 interface NodeCanvasModule {
@@ -648,7 +649,11 @@ function surfaceToBlob(
         ? surface.encode(format, quality)
         : format === "avif"
           ? surface.encode("avif", quality === undefined ? undefined : { quality })
-          : surface.encode("png");
+          : format === "gif"
+            ? quality === undefined
+              ? surface.encode("gif")
+              : surface.encode("gif", quality)
+            : surface.encode("png");
     return promise.then((buffer) => new Blob([buffer], { type }));
   }
   if (surface instanceof OffscreenCanvas) {
@@ -738,6 +743,8 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
         try {
           const blob = await surfaceToBlob(surface, format, 80);
           if (blob.type !== mediaTypes[format]) continue;
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          if ((await sniffImageFormat(bytes)) !== format) continue;
           formats[format] = {
             decode: {
               pixelFormats: ["rgba8"],
@@ -952,6 +959,9 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
         );
         const mediaType = mediaTypes[recipe.output.format] as string;
         const data = new Uint8Array(await blob.arrayBuffer());
+        if ((await sniffImageFormat(data)) !== recipe.output.format) {
+          throw new Error(`Canvas returned ${recipe.output.format} bytes in another format.`);
+        }
         return {
           kind: "encoded",
           data,

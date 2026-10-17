@@ -48,4 +48,16 @@ describe("canvasDriver on Node.js (@napi-rs/canvas backend)", () => {
     const result = await driver.transform(await redPng(8, 6), recipe);
     expect(result.metadata).toMatchObject({ width: 10, height: 10 });
   });
+
+  it("encodes real GIF bytes instead of PNG data", async () => {
+    const result = await canvasDriver().transform(
+      { data: new Uint8Array(8 * 8 * 4).fill(180), width: 8, height: 8, layout: "rgba8" },
+      { operations: [], output: { format: "gif" } },
+    );
+    expect(result.format).toBe("gif");
+    expect(result.mediaType).toBe("image/gif");
+    expect([...result.data.subarray(0, 4)]).toEqual([0x47, 0x49, 0x46, 0x38]);
+    const capabilities = await canvasDriver().capabilities();
+    expect(capabilities.formats.gif?.encode?.compressionModes).toContain("lossless");
+  });
 });

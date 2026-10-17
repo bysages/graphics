@@ -299,8 +299,22 @@ function applyNativeOperation(instance: SharpInstance, operation: ImageOperation
   }
 }
 
+async function probeSharpHevcEncoding(factory: SharpFactory): Promise<boolean> {
+  try {
+    await factory({
+      create: { width: 2, height: 2, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 1 } },
+    })
+      .heif({ compression: "hevc" })
+      .toBuffer();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function sharpCapabilityFormats(
   formatMap: Record<string, { input?: { buffer?: boolean }; output?: { buffer?: boolean } }>,
+  hevcEncoding: boolean,
 ): ImageCapabilities["formats"] {
   const formatCapability = (
     format: ImageFormat,
@@ -313,6 +327,7 @@ function sharpCapabilityFormats(
       modes: CompressionMode[];
       quality?: boolean;
       animation?: boolean;
+      requiresHevc?: boolean;
     },
   ): NonNullable<ImageCapabilities["formats"][ImageFormat]> => ({
     decode: {
@@ -323,9 +338,18 @@ function sharpCapabilityFormats(
       vector: options.vector ?? false,
     },
     encode: {
-      compressionModes: available?.output?.buffer ? options.modes : [],
-      quality: available?.output?.buffer === true && options.quality === true,
-      animation: available?.output?.buffer === true && options.animation === true,
+      compressionModes:
+        available?.output?.buffer && (options.requiresHevc !== true || hevcEncoding)
+          ? options.modes
+          : [],
+      quality:
+        available?.output?.buffer === true &&
+        (options.requiresHevc !== true || hevcEncoding) &&
+        options.quality === true,
+      animation:
+        available?.output?.buffer === true &&
+        (options.requiresHevc !== true || hevcEncoding) &&
+        options.animation === true,
       metadataPolicies: ["strip", "preserve"],
       sanitize: false,
     },
@@ -368,16 +392,19 @@ function sharpCapabilityFormats(
       frames: ["still", "pages"],
       modes: ["lossy", "lossless"],
       quality: true,
+      animation: true,
     }),
     heif: formatCapability("heif", heif, {
       frames: ["still"],
       modes: ["lossy", "lossless"],
       quality: true,
+      requiresHevc: true,
     }),
     heic: formatCapability("heic", heif, {
       frames: ["still"],
       modes: ["lossy", "lossless"],
       quality: true,
+      requiresHevc: true,
     }),
     jxl: formatCapability("jxl", jxl, {
       frames: ["still"],
@@ -388,6 +415,7 @@ function sharpCapabilityFormats(
 }
 
 export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
+  let capabilitiesPromise: Promise<ImageCapabilities> | undefined;
   const operationCapabilities: Partial<Record<ImageOperation["type"], OperationCapability>> = {};
   for (const operation of nativeOperations) operationCapabilities[operation] = { supported: true };
   for (const operation of fallbackOperations)
@@ -400,22 +428,34 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
     name: "sharp",
 
     async capabilities(): Promise<ImageCapabilities> {
-      const factory = await loadFactory(options);
-      const formatMap = (
-        factory as unknown as {
-          format: Record<string, { input?: { buffer?: boolean }; output?: { buffer?: boolean } }>;
-        }
-      ).format;
-      return {
-        driver: this.name,
-        formats: sharpCapabilityFormats(formatMap),
-        metadataRead: true,
-        operations: operationCapabilities,
-        notes: [
-          "Explicit decode.frames controls multi-frame input; GIF output no longer changes it implicitly.",
-          "Operations without a native sharp implementation run through the built-in RGBA fallback.",
-        ],
-      };
+      capabilitiesPromise ??= (async () => {
+        const factory = await loadFactory(options);
+        const formatMap = (
+          factory as unknown as {
+            format: Record<string, { input?: { buffer?: boolean }; output?: { buffer?: boolean } }>;
+          }
+        ).format;
+        const hevcEncoding = await probeSharpHevcEncoding(factory);
+        return {
+          driver: "sharp",
+          formats: sharpCapabilityFormats(formatMap, hevcEncoding),
+          metadataRead: true,
+          operations: operationCapabilities,
+          notes: [
+            "Explicit decode.frames controls multi-frame input; GIF output no longer changes it implicitly.",
+            "Operations without a native sharp implementation run through the built-in RGBA fallback.",
+            ...(hevcEncoding
+              ? []
+              : ["HEIF/HEIC encoding is unavailable because libvips has no HEVC encoder."]),
+          ],
+        } as ImageCapabilities;
+      })();
+      try {
+        return await capabilitiesPromise;
+      } catch (error) {
+        capabilitiesPromise = undefined;
+        throw error;
+      }
     },
 
     async metadata(input: ImageInput, _context?: DriverRequestContext): Promise<ImageMetadata> {
@@ -507,28 +547,14 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
     },
 
     async checkRecipe(recipe: ImagePipelineConfig): Promise<ImageCapabilityResult> {
-      const factory = await loadFactory(options);
-      const formatMap = (
-        factory as unknown as {
-          format: Record<string, { input?: { buffer?: boolean }; output?: { buffer?: boolean } }>;
+      const capabilities = await this.capabilities();
+      return checkRecipeCapabilities(recipe, capabilities, (operation) => {
+        const capability = capabilities.operations[operation.type];
+        if (operation.type === "resize" && operation.kernel === "linear") {
+          return { supported: false, notes: ["linear is not a native sharp kernel."] };
         }
-      ).format;
-      const capabilities: ImageCapabilities = {
-        driver: this.name,
-        formats: sharpCapabilityFormats(formatMap),
-        metadataRead: true,
-        operations: operationCapabilities,
-      };
-
-      return Promise.resolve(
-        checkRecipeCapabilities(recipe, capabilities, (operation) => {
-          const capability = operationCapabilities[operation.type];
-          if (operation.type === "resize" && operation.kernel === "linear") {
-            return { supported: false, notes: ["linear is not a native sharp kernel."] };
-          }
-          return capability ?? { supported: false };
-        }),
-      );
+        return capability ?? { supported: false };
+      });
     },
 
     async decodeFrames(input: ImageInput, request: ImageDecodeRequest): Promise<RawImageSequence> {

@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import { describe, expect, it } from "vite-plus/test";
 
 import { sharpDriver } from "../../src/drivers/sharp";
@@ -69,6 +71,50 @@ describe("sharpDriver", () => {
     expect(result.metadata.pages).toBeUndefined();
   });
 
+  it("rejects sharp work when the caller has already aborted", async () => {
+    const signal = AbortSignal.abort();
+    await expect(
+      driver.metadata(
+        {
+          data: new Uint8Array(8 * 8 * 4).fill(120),
+          width: 8,
+          height: 8,
+          layout: "rgba8",
+        },
+        { signal },
+      ),
+    ).rejects.toMatchObject({ code: "UNIMAGE_ABORT" });
+    await expect(
+      driver.transform(
+        { data: new Uint8Array(8 * 8 * 4).fill(120), width: 8, height: 8, layout: "rgba8" },
+        { operations: [], output: { format: "png" } },
+        { signal },
+      ),
+    ).rejects.toMatchObject({ code: "UNIMAGE_ABORT" });
+    await expect(
+      driver.decode!(
+        { data: new Uint8Array(8 * 8 * 4).fill(120), width: 8, height: 8, layout: "rgba8" },
+        { signal },
+      ),
+    ).rejects.toMatchObject({ code: "UNIMAGE_ABORT" });
+  });
+
+  it("reports HEVC-dependent HEIF and HEIC encoding accurately", async () => {
+    const capabilities = await driver.capabilities();
+    const supported = (capabilities.formats.heic?.encode?.compressionModes.length ?? 0) > 0;
+    expect(Boolean(capabilities.formats.heif?.encode?.compressionModes.length)).toBe(supported);
+    if (!supported) {
+      expect(capabilities.notes?.join(" ")).toContain("no HEVC encoder");
+      await expect(
+        driver.checkRecipe({
+          input: { format: "heic", frames: "first" },
+          operations: [],
+          output: { format: "heic" },
+        }),
+      ).resolves.toMatchObject({ supported: false });
+    }
+  });
+
   it("uses native entropy and attention strategies", async () => {
     const png = Buffer.from(new Uint8Array(32 * 32 * 4).fill(200));
     const input = {
@@ -107,6 +153,33 @@ describe("sharpDriver", () => {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="red"/></svg>`;
     const result = await driver.transform(new TextEncoder().encode(svg), recipe([], "png"));
     expect(result.metadata).toMatchObject({ width: 16, height: 16, format: "png" });
+  });
+
+  it("preserves TIFF pages with frames all", async () => {
+    const input = new Uint8Array(
+      await readFile(new URL("../fixtures/pages.tiff", import.meta.url)),
+    );
+    await expect(driver.metadata(input)).resolves.toMatchObject({ pages: 2 });
+    await expect(
+      driver.checkRecipe({
+        input: { format: "tiff", frames: "all" },
+        operations: [],
+        output: { format: "tiff" },
+      }),
+    ).resolves.toMatchObject({ supported: true });
+    const result = await driver.transform(input, {
+      input: { frames: "all" },
+      operations: [],
+      output: { format: "tiff" },
+    });
+    expect(result.metadata.pages).toBe(2);
+    await expect(
+      driver.checkRecipe({
+        input: { format: "tiff", frames: "all" },
+        operations: [],
+        output: { format: "jpeg" },
+      }),
+    ).resolves.toMatchObject({ supported: false });
   });
 
   it("applies clahe through the fallback pipeline", async () => {

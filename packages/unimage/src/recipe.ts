@@ -668,6 +668,9 @@ export function checkRecipeCapabilities(
     missing.push(issue("output", output.format));
   } else {
     const encode = outputCapability.encode;
+    if (output.format !== "svg" && encode.compressionModes.length === 0) {
+      missing.push(issue("output", output.format));
+    }
     const quality = "quality" in output ? output.quality : undefined;
     const lossless = "lossless" in output ? output.lossless === true : false;
     if (quality !== undefined && !encode.quality) missing.push(issue("output", output.format));
