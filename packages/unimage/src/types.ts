@@ -7,7 +7,12 @@ export type ImageFormat =
   | "svg"
   | "tiff"
   | "heif"
-  | "heic";
+  | "heic"
+  | "bmp"
+  | "ico"
+  | "jxl"
+  | "pnm"
+  | "tga";
 
 export type RawImageLayout = "rgba8";
 
@@ -181,6 +186,30 @@ export interface TintOperation {
   type: "tint";
   color: string;
 }
+
+export interface ContrastOperation {
+  type: "contrast";
+  /** -100 decreases contrast; 100 increases contrast. */
+  amount: number;
+}
+
+export interface ConvolveOperation {
+  kernel: readonly number[];
+  width: number;
+  height: number;
+  scale?: number;
+  offset?: number;
+  border?: "copy" | "mirror";
+}
+
+export interface RemoveAlphaOperation {
+  type: "removeAlpha";
+}
+
+export interface EnsureAlphaOperation {
+  type: "ensureAlpha";
+  alpha?: number;
+}
 /** Integer from 1 through 100. */
 export type Quality = number;
 
@@ -241,7 +270,14 @@ export type ImageOutput =
       lossless?: boolean;
       metadataPolicy?: MetadataPolicy;
     }
-  | { format: "tiff"; quality?: Quality; metadataPolicy?: MetadataPolicy };
+  | { format: "tiff"; quality?: Quality; metadataPolicy?: MetadataPolicy }
+  | { format: "bmp" | "ico" | "pnm" | "tga"; metadataPolicy?: MetadataPolicy }
+  | {
+      format: "jxl";
+      quality?: Quality;
+      lossless?: boolean;
+      metadataPolicy?: MetadataPolicy;
+    };
 
 export type ImageOperation =
   | { type: "autoOrient" }
@@ -266,7 +302,11 @@ export type ImageOperation =
   | LinearOperation
   | ModulateOperation
   | OpacityOperation
-  | TintOperation;
+  | TintOperation
+  | ContrastOperation
+  | (ConvolveOperation & { type: "convolve" })
+  | RemoveAlphaOperation
+  | EnsureAlphaOperation;
 
 export type ImageOperationType = ImageOperation["type"];
 

@@ -73,6 +73,9 @@ export interface ImageProxyModifiers {
   dilate?: number | string;
   erode?: number | string;
   clahe?: number | string;
+  contrast?: number | string;
+  removealpha?: FlagModifier;
+  ensurealpha?: number | string;
   flatten?: FlagModifier;
   unflatten?: FlagModifier;
   gamma?: string;
@@ -106,6 +109,11 @@ const supportedImageFormats: readonly ImageFormat[] = [
   "tiff",
   "heif",
   "heic",
+  "bmp",
+  "ico",
+  "jxl",
+  "pnm",
+  "tga",
 ];
 
 export const SUPPORTED_FORMATS: ReadonlySet<string> = new Set(supportedImageFormats);
@@ -371,6 +379,13 @@ export function modifiersToRecipe(
       ...(maxSlope === undefined ? {} : { maxSlope }),
     });
   }
+  if (modifiers.contrast !== undefined) {
+    const amount = parseNumber(modifiers.contrast, "contrast");
+    if (amount < -100 || amount > 100) {
+      throw invalidModifier("contrast", "must be between -100 and 100");
+    }
+    operations.push({ type: "contrast", amount });
+  }
   if (modifiers.extract !== undefined || modifiers.crop !== undefined) {
     operations.push(parseCrop((modifiers.extract ?? modifiers.crop) as string));
   }
@@ -380,6 +395,19 @@ export function modifiersToRecipe(
   }
   if (modifiers.erode !== undefined) {
     operations.push({ type: "erode", size: parseMorphologySize(modifiers.erode, "erode") });
+  }
+  if (toFlag(modifiers.ensurealpha)) {
+    const alphaValue = modifiers.ensurealpha === "" ? undefined : Number(modifiers.ensurealpha);
+    if (
+      alphaValue !== undefined &&
+      (!Number.isFinite(alphaValue) || alphaValue < 0 || alphaValue > 1)
+    ) {
+      throw invalidModifier("ensurealpha", "must be between 0 and 1");
+    }
+    operations.push({
+      type: "ensureAlpha",
+      ...(alphaValue === undefined ? {} : { alpha: alphaValue }),
+    });
   }
   if (modifiers.extend !== undefined) {
     const parts = modifierParts(modifiers.extend, 5);
@@ -461,6 +489,7 @@ export function modifiersToRecipe(
   }
   if (modifiers.opacity !== undefined)
     operations.push({ type: "opacity", factor: parseNumber(modifiers.opacity, "opacity") });
+  if (toFlag(modifiers.removealpha)) operations.push({ type: "removeAlpha" });
   const size =
     (modifiers.resize ?? modifiers.s)
       ? parseResizeSize(

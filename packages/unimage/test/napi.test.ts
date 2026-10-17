@@ -88,10 +88,20 @@ describe("napiDriver", () => {
     });
   });
 
-  it("rejects formats that the napi encoder does not support", async () => {
-    await expect(driver.transform(raw, recipe([], "tiff"))).rejects.toMatchObject({
+  it("encodes additional native formats", async () => {
+    const tiff = await driver.transform(raw, recipe([], "tiff"));
+    expect(tiff.format).toBe("tiff");
+    expect(tiff.mediaType).toBe("image/tiff");
+
+    const bmp = await driver.transform(raw, recipe([], "bmp"));
+    expect(bmp.format).toBe("bmp");
+
+    const ico = await driver.transform(raw, recipe([], "ico"));
+    expect(ico.format).toBe("ico");
+
+    await expect(driver.transform(raw, recipe([], "jxl"))).rejects.toMatchObject({
       code: "UNIMAGE_UNSUPPORTED_FORMAT",
-      format: "tiff",
+      format: "jxl",
     });
   });
 

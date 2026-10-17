@@ -8,6 +8,7 @@ import {
   type ImageProxyFormatModifier,
   type ImageProxyModifiers,
 } from "./proxy";
+import { mediaTypeForFormat } from "./utils/format";
 
 export type ImageProxyAutoFormat =
   | "avif"
@@ -97,7 +98,7 @@ export function createImageProxyHandler(
         });
       }
 
-      const mediaType = processed.format === "svg" ? "image/svg+xml" : `image/${processed.format}`;
+      const mediaType = mediaTypeForFormat(processed.format);
       return new Response(new Blob([toBlobPart(processed.data)], { type: mediaType }), {
         headers: responseHeaders(sourceMeta.maxAge, etag, mediaType, sourceMeta.mtime),
       });

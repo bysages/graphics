@@ -1,5 +1,16 @@
 import type { ImageInput } from "../types";
 
+const mediaTypes: Partial<Record<import("../types").ImageFormat, string>> = {
+  svg: "image/svg+xml",
+  ico: "image/x-icon",
+  pnm: "image/x-portable-anymap",
+  tga: "image/x-tga",
+};
+
+export function mediaTypeForFormat(format: import("../types").ImageFormat): string {
+  return mediaTypes[format] ?? `image/${format}`;
+}
+
 export type SniffedImageFormat =
   | "png"
   | "jpeg"
@@ -8,13 +19,19 @@ export type SniffedImageFormat =
   | "gif"
   | "svg"
   | "heic"
+  | "heif"
   | "tiff"
+  | "bmp"
+  | "ico"
+  | "jxl"
+  | "pnm"
   | undefined;
 
 const magic: Array<[SniffedImageFormat, readonly number[]]> = [
   ["png", [0x89, 0x50, 0x4e, 0x47]],
   ["jpeg", [0xff, 0xd8, 0xff]],
   ["gif", [0x47, 0x49, 0x46, 0x38]],
+  ["bmp", [0x42, 0x4d]],
 ];
 
 function matchMagic(bytes: Uint8Array): SniffedImageFormat {
@@ -40,9 +57,19 @@ function matchMagic(bytes: Uint8Array): SniffedImageFormat {
     bytes[5] === 0x74 && // t
     bytes[6] === 0x79 && // y
     bytes[7] === 0x70 && // p
-    (bytes[8] === 0x61 || bytes[8] === 0x6d) // "a" (avif/avis) or "m" (mif1)
+    (bytes[8] === 0x61 || bytes[8] === 0x73) // "avif" / "avis"
   ) {
     return "avif";
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[4] === 0x66 && // f
+    bytes[5] === 0x74 && // t
+    bytes[6] === 0x79 && // y
+    bytes[7] === 0x70 && // p
+    bytes[8] === 0x6d // "mif1" HEIF container
+  ) {
+    return "heif";
   }
   if (
     bytes.length >= 12 &&
@@ -60,6 +87,39 @@ function matchMagic(bytes: Uint8Array): SniffedImageFormat {
       (bytes[0] === 0x4d && bytes[1] === 0x4d && bytes[3] === 0x2a)) // "MM\0*"
   ) {
     return "tiff";
+  }
+  if (
+    bytes.length >= 4 &&
+    bytes[0] === 0x00 &&
+    bytes[1] === 0x00 &&
+    bytes[2] === 0x01 &&
+    bytes[3] === 0x00
+  ) {
+    return "ico";
+  }
+  if (bytes.length >= 12 && bytes[0] === 0xff && bytes[1] === 0x0a) {
+    return "jxl";
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x4a &&
+    bytes[1] === 0x58 &&
+    bytes[2] === 0x4c &&
+    bytes[3] === 0x20 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x87 &&
+    bytes[7] === 0x0a
+  ) {
+    return "jxl";
+  }
+  if (
+    bytes.length >= 2 &&
+    bytes[0] === 0x50 &&
+    (bytes[1] as number) >= 0x31 &&
+    (bytes[1] as number) <= 0x37
+  ) {
+    return "pnm";
   }
   return undefined;
 }

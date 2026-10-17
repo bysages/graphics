@@ -11,6 +11,8 @@ import type {
   ImageOperation,
   ImagePipelineConfig,
   ImageResult,
+  FrameSupport,
+  CompressionMode,
   ImageRecipe,
   ImageCapabilityResult,
   OperationCapability,
@@ -49,6 +51,10 @@ const nativeOperations = new Set<ImageOperation["type"]>([
   "linear",
   "modulate",
   "tint",
+  "contrast",
+  "convolve",
+  "removeAlpha",
+  "ensureAlpha",
 ]);
 
 const fallbackOperations = new Set<ImageOperation["type"]>([
@@ -56,7 +62,6 @@ const fallbackOperations = new Set<ImageOperation["type"]>([
   "erode",
   "clahe",
   "unflatten",
-  "opacity",
 ]);
 
 const sharpFormats: Record<string, ImageFormat> = {
@@ -70,6 +75,9 @@ const sharpFormats: Record<string, ImageFormat> = {
   tif: "tiff",
   heif: "heif",
   heic: "heic",
+  bmp: "bmp",
+  ico: "ico",
+  jxl: "jxl",
 };
 
 function toColorLike(value: string | undefined): {
@@ -122,6 +130,20 @@ function encoderFor(instance: SharpInstance, recipe: ImageRecipe): SharpInstance
     case "heif":
     case "heic":
       return instance.heif({ compression: "hevc", quality, lossless });
+    case "jxl": {
+      const options: import("sharp").JxlOptions = {};
+      if (quality !== undefined) options.quality = quality;
+      if (lossless !== undefined) options.lossless = lossless;
+      return instance.jxl(options);
+    }
+    case "bmp":
+    case "ico":
+    case "pnm":
+    case "tga":
+      throw new UnImageError(`The sharp driver cannot encode ${format}.`, {
+        code: "UNIMAGE_UNSUPPORTED_FORMAT",
+        format,
+      });
     default:
       return instance.gif();
   }
@@ -246,6 +268,22 @@ function applyNativeOperation(instance: SharpInstance, operation: ImageOperation
         hue: operation.hue,
         lightness: operation.lightness,
       });
+    case "contrast": {
+      const amount = operation.amount / 100;
+      return instance.linear(1 + amount, 128 * -amount);
+    }
+    case "convolve":
+      return instance.convolve({
+        kernel: [...operation.kernel],
+        width: operation.width,
+        height: operation.height,
+        ...(operation.scale === undefined ? {} : { scale: operation.scale }),
+        ...(operation.offset === undefined ? {} : { offset: operation.offset }),
+      });
+    case "removeAlpha":
+      return instance.removeAlpha();
+    case "ensureAlpha":
+      return instance.ensureAlpha(operation.alpha);
     case "tint": {
       const [r, g, b] = parseColor(operation.color);
       return instance.tint({ r, g, b });
@@ -256,6 +294,94 @@ function applyNativeOperation(instance: SharpInstance, operation: ImageOperation
         operation: operation.type,
       });
   }
+}
+
+function sharpCapabilityFormats(
+  formatMap: Record<string, { input?: { buffer?: boolean }; output?: { buffer?: boolean } }>,
+): ImageCapabilities["formats"] {
+  const formatCapability = (
+    format: ImageFormat,
+    available: { input?: { buffer?: boolean }; output?: { buffer?: boolean } } | undefined,
+    options: {
+      frames: FrameSupport[];
+      orientation?: boolean;
+      density?: boolean;
+      vector?: boolean;
+      modes: CompressionMode[];
+      quality?: boolean;
+      animation?: boolean;
+    },
+  ): NonNullable<ImageCapabilities["formats"][ImageFormat]> => ({
+    decode: {
+      pixelFormats: available?.input?.buffer ? ["rgba8"] : [],
+      frames: options.frames,
+      orientation: options.orientation ?? false,
+      rasterDensity: options.density ?? false,
+      vector: options.vector ?? false,
+    },
+    encode: {
+      compressionModes: available?.output?.buffer ? options.modes : [],
+      quality: available?.output?.buffer === true && options.quality === true,
+      animation: available?.output?.buffer === true && options.animation === true,
+      metadataPolicies: ["strip", "preserve"],
+      sanitize: false,
+    },
+  });
+  const heif = formatMap.heif;
+  const jxl = formatMap.jxl;
+  return {
+    png: formatCapability("png", formatMap.png, { frames: ["still"], modes: ["lossless"] }),
+    jpeg: formatCapability("jpeg", formatMap.jpeg, {
+      frames: ["still"],
+      orientation: true,
+      modes: ["lossy"],
+      quality: true,
+    }),
+    webp: formatCapability("webp", formatMap.webp, {
+      frames: ["still", "animated"],
+      orientation: true,
+      modes: ["lossy", "lossless"],
+      quality: true,
+      animation: true,
+    }),
+    avif: formatCapability("avif", heif, {
+      frames: ["still"],
+      orientation: true,
+      modes: ["lossy", "lossless"],
+      quality: true,
+    }),
+    gif: formatCapability("gif", formatMap.gif, {
+      frames: ["still", "animated"],
+      modes: ["lossy"],
+      animation: true,
+    }),
+    svg: formatCapability("svg", formatMap.svg, {
+      frames: ["still"],
+      density: true,
+      vector: true,
+      modes: [],
+    }),
+    tiff: formatCapability("tiff", formatMap.tiff, {
+      frames: ["still", "pages"],
+      modes: ["lossy", "lossless"],
+      quality: true,
+    }),
+    heif: formatCapability("heif", heif, {
+      frames: ["still"],
+      modes: ["lossy", "lossless"],
+      quality: true,
+    }),
+    heic: formatCapability("heic", heif, {
+      frames: ["still"],
+      modes: ["lossy", "lossless"],
+      quality: true,
+    }),
+    jxl: formatCapability("jxl", jxl, {
+      frames: ["still"],
+      modes: ["lossy", "lossless"],
+      quality: true,
+    }),
+  };
 }
 
 export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
@@ -270,162 +396,23 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
   return {
     name: "sharp",
 
-    capabilities(): Promise<ImageCapabilities> {
-      return Promise.resolve({
-        driver: "sharp",
-        formats: {
-          png: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossless"],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          jpeg: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: true,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          webp: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still", "animated"],
-              orientation: true,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy", "lossless"],
-              quality: true,
-              animation: true,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          avif: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: true,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy", "lossless"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          gif: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still", "animated"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy"],
-              quality: false,
-              animation: true,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          svg: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: true,
-              vector: true,
-            },
-            encode: {
-              compressionModes: [],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          tiff: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still", "pages"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy", "lossless"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          heif: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy", "lossless"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          heic: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy", "lossless"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-        },
+    async capabilities(): Promise<ImageCapabilities> {
+      const factory = await loadFactory(options);
+      const formatMap = (
+        factory as unknown as {
+          format: Record<string, { input?: { buffer?: boolean }; output?: { buffer?: boolean } }>;
+        }
+      ).format;
+      return {
+        driver: this.name,
+        formats: sharpCapabilityFormats(formatMap),
         metadataRead: true,
         operations: operationCapabilities,
         notes: [
           "Explicit decode.frames controls multi-frame input; GIF output no longer changes it implicitly.",
           "Operations without a native sharp implementation run through the built-in RGBA fallback.",
         ],
-      });
+      };
     },
 
     async metadata(input: ImageInput, _context?: DriverRequestContext): Promise<ImageMetadata> {
@@ -516,155 +503,16 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
       }
     },
 
-    checkRecipe(recipe: ImagePipelineConfig): Promise<ImageCapabilityResult> {
+    async checkRecipe(recipe: ImagePipelineConfig): Promise<ImageCapabilityResult> {
+      const factory = await loadFactory(options);
+      const formatMap = (
+        factory as unknown as {
+          format: Record<string, { input?: { buffer?: boolean }; output?: { buffer?: boolean } }>;
+        }
+      ).format;
       const capabilities: ImageCapabilities = {
         driver: this.name,
-        formats: {
-          png: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossless"],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          jpeg: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: true,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          webp: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still", "animated"],
-              orientation: true,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy", "lossless"],
-              quality: true,
-              animation: true,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          avif: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: true,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy", "lossless"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          gif: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still", "animated"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy"],
-              quality: false,
-              animation: true,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          svg: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: true,
-              vector: true,
-            },
-            encode: {
-              compressionModes: [],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          tiff: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still", "pages"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy", "lossless"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          heif: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy", "lossless"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-          heic: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy", "lossless"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip", "preserve"],
-              sanitize: false,
-            },
-          },
-        },
+        formats: sharpCapabilityFormats(formatMap),
         metadataRead: true,
         operations: operationCapabilities,
       };

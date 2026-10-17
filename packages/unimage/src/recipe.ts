@@ -52,6 +52,10 @@ const operationTypes: readonly ImageOperationType[] = [
   "modulate",
   "opacity",
   "tint",
+  "contrast",
+  "convolve",
+  "removeAlpha",
+  "ensureAlpha",
 ];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -274,6 +278,72 @@ function parseOperation(value: unknown): ImageOperation {
     }
     case "opacity":
       return { type: "opacity", factor: parseNonNegativeNumber(value.factor, "opacity.factor") };
+    case "contrast": {
+      if (
+        typeof value.amount !== "number" ||
+        !Number.isFinite(value.amount) ||
+        value.amount < -100 ||
+        value.amount > 100
+      ) {
+        throw new UnImageError("contrast.amount must be a finite number from -100 to 100.", {
+          code: "UNIMAGE_INVALID_RECIPE",
+          operation: "contrast",
+        });
+      }
+      return { type: "contrast", amount: value.amount };
+    }
+    case "convolve": {
+      if (!Array.isArray(value.kernel) || value.kernel.length === 0) {
+        throw new UnImageError("convolve.kernel must be a non-empty numeric array.", {
+          code: "UNIMAGE_INVALID_RECIPE",
+          operation: "convolve",
+        });
+      }
+      const kernel = value.kernel.map((item) => {
+        if (typeof item !== "number" || !Number.isFinite(item)) {
+          throw new UnImageError("convolve.kernel values must be finite numbers.", {
+            code: "UNIMAGE_INVALID_RECIPE",
+            operation: "convolve",
+          });
+        }
+        return item;
+      });
+      const width = parsePositiveInteger(value.width, "convolve.width");
+      const height = parsePositiveInteger(value.height, "convolve.height");
+      if (kernel.length !== width * height) {
+        throw new UnImageError("convolve.kernel length must equal width * height.", {
+          code: "UNIMAGE_INVALID_RECIPE",
+          operation: "convolve",
+        });
+      }
+      const operation: Extract<ImageOperation, { type: "convolve" }> = {
+        type: "convolve",
+        kernel,
+        width,
+        height,
+      };
+      if (value.scale !== undefined)
+        operation.scale = parseNonNegativeNumber(value.scale, "convolve.scale");
+      if (value.offset !== undefined) operation.offset = Number(value.offset);
+      if (value.border === "copy" || value.border === "mirror") operation.border = value.border;
+      return operation;
+    }
+    case "removeAlpha":
+      return { type: "removeAlpha" };
+    case "ensureAlpha": {
+      const operation: Extract<ImageOperation, { type: "ensureAlpha" }> = { type: "ensureAlpha" };
+      if (value.alpha !== undefined) {
+        const alpha = Number(value.alpha);
+        if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
+          throw new UnImageError("ensureAlpha.alpha must be between 0 and 1.", {
+            code: "UNIMAGE_INVALID_RECIPE",
+            operation: "ensureAlpha",
+          });
+        }
+        operation.alpha = alpha;
+      }
+      return operation;
+    }
     case "tint":
       if (typeof value.color !== "string") {
         throw new UnImageError("tint.color must be a CSS color string.", {
@@ -327,7 +397,7 @@ export function parseImageRecipe(value: unknown): ImageRecipe {
       !Number.isInteger(quality) ||
       (quality as number) < 1 ||
       (quality as number) > 100 ||
-      !["jpeg", "webp", "avif", "tiff", "heif", "heic"].includes(format)
+      !["jpeg", "webp", "avif", "tiff", "heif", "heic", "jxl"].includes(format)
     ) {
       throw invalidRecipe("output.quality must be an integer between 1 and 100 for the format.");
     }
@@ -335,7 +405,7 @@ export function parseImageRecipe(value: unknown): ImageRecipe {
   if (hasProperty(value.output, "lossless")) {
     if (
       typeof value.output.lossless !== "boolean" ||
-      !["webp", "avif", "heif", "heic"].includes(format)
+      !["webp", "avif", "heif", "heic", "jxl"].includes(format)
     ) {
       throw invalidRecipe(
         "output.lossless is only supported as a boolean for WebP, AVIF, HEIF, and HEIC.",

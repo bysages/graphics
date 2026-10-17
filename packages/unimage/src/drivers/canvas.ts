@@ -73,6 +73,7 @@ const mediaTypes: Record<string, string> = {
   jpeg: "image/jpeg",
   webp: "image/webp",
   avif: "image/avif",
+  gif: "image/gif",
 };
 
 function isRawImage(input: ImageInput): input is RawImageData {
@@ -607,6 +608,11 @@ function applyOperation(surface: Surface, operation: ImageOperation): Surface {
     case "linear":
     case "modulate":
     case "opacity":
+    case "contrast":
+    case "convolve":
+    case "removeAlpha":
+    case "ensureAlpha":
+      return pixelFilterSurface(surface, operation);
     case "tint":
       return pixelFilterSurface(surface, operation);
     case "blur":
@@ -665,7 +671,7 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
       const formats: Partial<ImageCapabilities["formats"]> = {};
       const surface = createSurface(1, 1);
       surfaceContext(surface).fillRect(0, 0, 1, 1);
-      for (const format of ["png", "jpeg", "webp", "avif"] as const) {
+      for (const format of ["png", "jpeg", "webp", "avif", "gif"] as const) {
         try {
           const blob = await surfaceToBlob(surface, format, 80);
           if (blob.type !== mediaTypes[format]) continue;
@@ -678,8 +684,8 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
               vector: false,
             },
             encode: {
-              compressionModes: format === "png" ? ["lossless"] : ["lossy"],
-              quality: format !== "png",
+              compressionModes: format === "png" || format === "gif" ? ["lossless"] : ["lossy"],
+              quality: format !== "png" && format !== "gif",
               animation: false,
               metadataPolicies: ["strip"],
               sanitize: false,
@@ -727,6 +733,10 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
           modulate: { supported: true },
           opacity: { supported: true },
           tint: { supported: true },
+          contrast: { supported: true },
+          convolve: { supported: true },
+          removeAlpha: { supported: true },
+          ensureAlpha: { supported: true },
         },
         notes: [
           "Canvas encoders strip incidental metadata.",
@@ -838,6 +848,10 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
           modulate: { supported: true },
           opacity: { supported: true },
           tint: { supported: true },
+          contrast: { supported: true },
+          convolve: { supported: true },
+          removeAlpha: { supported: true },
+          ensureAlpha: { supported: true },
         },
       };
 

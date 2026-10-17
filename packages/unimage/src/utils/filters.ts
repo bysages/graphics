@@ -306,7 +306,11 @@ export function applyPixelFilter(
         | "linear"
         | "modulate"
         | "opacity"
-        | "tint";
+        | "tint"
+        | "contrast"
+        | "convolve"
+        | "removeAlpha"
+        | "ensureAlpha";
     }
   >,
 ): RgbaImage {
@@ -563,6 +567,70 @@ export function applyPixelFilter(
         output.data[index] = modulated.r;
         output.data[index + 1] = modulated.g;
         output.data[index + 2] = modulated.b;
+      }
+      return output;
+    }
+    case "contrast": {
+      const amount = operation.amount / 100;
+      const multiplier = 1 + amount;
+      const offset = 128 * -amount;
+      const output = cloneImage(image);
+      for (let index = 0; index < output.data.length; index += 4) {
+        for (let channel = 0; channel < 3; channel += 1) {
+          output.data[index + channel] = clamp255(
+            (output.data[index + channel] as number) * multiplier + offset,
+          );
+        }
+      }
+      return output;
+    }
+    case "convolve": {
+      const output = createImage(image.width, image.height);
+      const halfWidth = Math.floor(operation.width / 2);
+      const halfHeight = Math.floor(operation.height / 2);
+      const scale = operation.scale ?? operation.kernel.reduce((total, value) => total + value, 0);
+      const offset = operation.offset ?? 0;
+      const sample = (x: number, y: number, channel: number) => {
+        if (x >= 0 && x < image.width && y >= 0 && y < image.height) {
+          return image.data[(y * image.width + x) * 4 + channel] ?? 0;
+        }
+        if (operation.border === "mirror") {
+          const mirroredX = x < 0 ? -x - 1 : x >= image.width ? image.width * 2 - x - 1 : x;
+          const mirroredY = y < 0 ? -y - 1 : y >= image.height ? image.height * 2 - y - 1 : y;
+          return image.data[(mirroredY * image.width + mirroredX) * 4 + channel] ?? 0;
+        }
+        return 0;
+      };
+      for (let y = 0; y < image.height; y += 1) {
+        for (let x = 0; x < image.width; x += 1) {
+          for (let channel = 0; channel < 3; channel += 1) {
+            let total = 0;
+            for (let kernelY = 0; kernelY < operation.height; kernelY += 1) {
+              for (let kernelX = 0; kernelX < operation.width; kernelX += 1) {
+                total +=
+                  (operation.kernel[kernelY * operation.width + kernelX] ?? 0) *
+                  sample(x + kernelX - halfWidth, y + kernelY - halfHeight, channel);
+              }
+            }
+            const normalized = scale === 0 ? total : total / scale + offset;
+            output.data[(y * image.width + x) * 4 + channel] = clamp255(normalized);
+          }
+          output.data[(y * image.width + x) * 4 + 3] =
+            image.data[(y * image.width + x) * 4 + 3] ?? 255;
+        }
+      }
+      return output;
+    }
+    case "removeAlpha": {
+      const output = cloneImage(image);
+      for (let index = 3; index < output.data.length; index += 4) output.data[index] = 255;
+      return output;
+    }
+    case "ensureAlpha": {
+      const output = cloneImage(image);
+      const alpha = operation.alpha === undefined ? 255 : clamp255(operation.alpha * 255);
+      for (let index = 3; index < output.data.length; index += 4) {
+        if ((output.data[index] as number) === 0) output.data[index] = alpha;
       }
       return output;
     }

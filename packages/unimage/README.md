@@ -32,13 +32,14 @@ bun add unimage
 
 Core runtime dependencies are `h3` and `unpalette`. Image engines are optional peer dependencies — install what you use:
 
-| You want                                          | Install                    |
-| ------------------------------------------------- | -------------------------- |
-| Node raster processing (recommended)              | `pnpm add sharp`           |
-| Node raster processing without native build steps | `pnpm add @napi-rs/image`  |
-| Canvas2D in the browser and Node                  | `pnpm add @napi-rs/canvas` |
-| SVG optimization                                  | `pnpm add svgo`            |
-| unstorage-backed storage                          | `pnpm add unstorage`       |
+| You want                                     | Install                            |
+| -------------------------------------------- | ---------------------------------- |
+| Node and Bun raster processing (recommended) | `pnpm add sharp`                   |
+| Raster processing without native build steps | `pnpm add @napi-rs/image`          |
+| Canvas2D in the browser and Node             | `pnpm add @napi-rs/canvas`         |
+| sharp WASM fallback for supported runtimes   | `pnpm add sharp @img/sharp-wasm32` |
+| SVG optimization                             | `pnpm add svgo`                    |
+| unstorage-backed storage                     | `pnpm add unstorage`               |
 
 ## Quick Start
 
@@ -168,38 +169,41 @@ if (!capability.supported) throw new Error("This runtime cannot run the pipeline
 
 #### Modifiers
 
-| Modifier                                          | Alias     | Example                         | Description                                                                                |
-| ------------------------------------------------- | --------- | ------------------------------- | ------------------------------------------------------------------------------------------ |
-| `format`                                          | `f`       | `f_webp`                        | Output format: `png`, `jpeg`, `webp`, `avif`, `gif`, `svg`, `tiff`, `heif`, `heic`, `auto` |
-| `width` / `height`                                | `w` / `h` | `w_320,h_240`                   | Target dimensions                                                                          |
-| `fit`                                             |           | `fit_cover`                     | `contain`, `cover`, `fill`; IPX `inside`/`outside` map to `contain`/`cover`                |
-| `resize`                                          | `s`       | `s_320x240`                     | Shorthand for width/height/fit                                                             |
-| `quality`                                         | `q`       | `q_80`                          | Encoder quality for JPEG, WebP, AVIF, TIFF, HEIF, and HEIC                                 |
-| `position`                                        | `pos`     | `pos_top`                       | Crop/cover anchor, including `entropy` and `attention`                                     |
-| `kernel`                                          |           | `kernel_lanczos3`               | Resize kernel                                                                              |
-| `background`                                      | `b`       | `b_ff0000`                      | Background color for rotate/extend/flatten                                                 |
-| `trim`                                            |           | `trim_10`                       | Trim border pixels within threshold                                                        |
-| `extend`                                          |           | `extend_10_0_10_0`              | Pad edges with `background`, `copy`, `repeat`, or `mirror`                                 |
-| `extract` / `crop`                                |           | `extract_left_top_right_bottom` | Crop a region                                                                              |
-| `rotate`                                          |           | `rotate_90`                     | Rotation angle                                                                             |
-| `autoorient`                                      |           | `autoorient`                    | Honor EXIF orientation                                                                     |
-| `flip` / `flop`                                   |           | `flip`                          | Vertical / horizontal mirror                                                               |
-| `grayscale`                                       |           | `grayscale`                     | Desaturate                                                                                 |
-| `blur`                                            |           | `blur_2`                        | Gaussian blur by sigma                                                                     |
-| `sharpen`                                         |           | `sharpen_1`                     | Sharpen by sigma                                                                           |
-| `median`                                          |           | `median_3`                      | Median filter                                                                              |
-| `dilate` / `erode`                                |           | `erode_2`                       | Morphology                                                                                 |
-| `clahe`                                           |           | `clahe_4_4`                     | Contrast-limited adaptive histogram equalization                                           |
-| `gamma`                                           |           | `gamma_2.2`                     | Gamma correction                                                                           |
-| `normalize`                                       |           | `normalize`                     | Stretch luminance to full range                                                            |
-| `threshold`                                       |           | `threshold_128`                 | Binary threshold                                                                           |
-| `linear`                                          |           | `linear_1.1_-10`                | Linear luminance transform                                                                 |
-| `modulate`                                        |           | `modulate_brightness_1.1`       | Brightness/saturation/hue/lightness                                                        |
-| `brightness` / `saturation` / `hue` / `lightness` |           | `brightness_1.1`                | Individual modulate channels                                                               |
-| `opacity`                                         |           | `opacity_0.5`                   | Scale alpha                                                                                |
-| `tint`                                            |           | `tint_ff8800`                   | Chromatic tint                                                                             |
-| `flatten` / `unflatten`                           |           | `flatten`                       | Merge/remove alpha against a background                                                    |
-| `animated`                                        | `a`       | `animated`                      | Decode every frame; GIF output uses all frames by default                                  |
+| Modifier                                          | Alias     | Example                         | Description                                                                                                                   |
+| ------------------------------------------------- | --------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `format`                                          | `f`       | `f_webp`                        | Output format: `png`, `jpeg`, `webp`, `avif`, `gif`, `svg`, `tiff`, `heif`, `heic`, `bmp`, `ico`, `jxl`, `pnm`, `tga`, `auto` |
+| `width` / `height`                                | `w` / `h` | `w_320,h_240`                   | Target dimensions                                                                                                             |
+| `fit`                                             |           | `fit_cover`                     | `contain`, `cover`, `fill`, `outside`; IPX `inside`/`outside` are supported                                                   |
+| `resize`                                          | `s`       | `s_320x240`                     | Shorthand for width/height/fit                                                                                                |
+| `quality`                                         | `q`       | `q_80`                          | Encoder quality for JPEG, WebP, AVIF, TIFF, HEIF, HEIC, and JXL                                                               |
+| `position`                                        | `pos`     | `pos_top`                       | Crop/cover anchor, including `entropy` and `attention`                                                                        |
+| `kernel`                                          |           | `kernel_lanczos3`               | Resize kernel                                                                                                                 |
+| `background`                                      | `b`       | `b_ff0000`                      | Background color for rotate/extend/flatten                                                                                    |
+| `trim`                                            |           | `trim_10`                       | Trim border pixels within threshold                                                                                           |
+| `extend`                                          |           | `extend_10_0_10_0`              | Pad edges with `background`, `copy`, `repeat`, or `mirror`                                                                    |
+| `extract` / `crop`                                |           | `extract_left_top_right_bottom` | Crop a region                                                                                                                 |
+| `rotate`                                          |           | `rotate_90`                     | Rotation angle                                                                                                                |
+| `autoorient`                                      |           | `autoorient`                    | Honor EXIF orientation                                                                                                        |
+| `flip` / `flop`                                   |           | `flip`                          | Vertical / horizontal mirror                                                                                                  |
+| `grayscale`                                       |           | `grayscale`                     | Desaturate                                                                                                                    |
+| `blur`                                            |           | `blur_2`                        | Gaussian blur by sigma                                                                                                        |
+| `sharpen`                                         |           | `sharpen_1`                     | Sharpen by sigma                                                                                                              |
+| `median`                                          |           | `median_3`                      | Median filter                                                                                                                 |
+| `dilate` / `erode`                                |           | `erode_2`                       | Morphology                                                                                                                    |
+| `clahe`                                           |           | `clahe_4_4`                     | Contrast-limited adaptive histogram equalization                                                                              |
+| `gamma`                                           |           | `gamma_2.2`                     | Gamma correction                                                                                                              |
+| `normalize`                                       |           | `normalize`                     | Stretch luminance to full range                                                                                               |
+| `threshold`                                       |           | `threshold_128`                 | Binary threshold                                                                                                              |
+| `linear`                                          |           | `linear_1.1_-10`                | Linear luminance transform                                                                                                    |
+| `modulate`                                        |           | `modulate_brightness_1.1`       | Brightness/saturation/hue/lightness                                                                                           |
+| `brightness` / `saturation` / `hue` / `lightness` |           | `brightness_1.1`                | Individual modulate channels                                                                                                  |
+| `opacity`                                         |           | `opacity_0.5`                   | Scale alpha                                                                                                                   |
+| `tint`                                            |           | `tint_ff8800`                   | Chromatic tint                                                                                                                |
+| `contrast`                                        |           | `contrast_20`                   | Adjust contrast from `-100` to `100`                                                                                          |
+| `removealpha`                                     |           | `removealpha`                   | Flatten alpha to fully opaque                                                                                                 |
+| `ensurealpha`                                     |           | `ensurealpha`                   | Add an alpha channel                                                                                                          |
+| `flatten` / `unflatten`                           |           | `flatten`                       | Merge/remove alpha against a background                                                                                       |
+| `animated`                                        | `a`       | `animated`                      | Decode every frame; GIF output uses all frames by default                                                                     |
 
 Modifier-less URLs use a leading `_` segment: `/_/photos/cat.png`.
 
@@ -226,38 +230,41 @@ await image.transform(pngBytes, { operations: [], output: { format: "png" } });
 
 ## Driver comparison
 
-|                       | sharp                          | napi                                                                                         | canvas                                                | svgo             |
-| --------------------- | ------------------------------ | -------------------------------------------------------------------------------------------- | ----------------------------------------------------- | ---------------- |
-| Environment           | Node                           | Node · Browser via the WASI build                                                            | Browser (native Canvas2D) · Node (`@napi-rs/canvas`)  | Browser + Node   |
-| Dependency            | `sharp` (prebuilt libvips)     | `@napi-rs/image` (prebuilt `.node`, no compile); browser build: `@napi-rs/image-wasm32-wasi` | None in browsers · optional `@napi-rs/canvas` in Node | `svgo` (pure JS) |
-| Decode                | png · jpeg · webp · avif · gif | png · jpeg · webp · avif · svg (rasterized)                                                  | png · jpeg · webp · avif                              | svg              |
-| Encode                | png · jpeg · webp · avif · gif | png · jpeg · webp · avif                                                                     | png · jpeg · webp · avif (detected at runtime)        | svg              |
-| Animated input/output | ✓                              | —                                                                                            | —                                                     | —                |
-| autoOrient            | ✓                              | ✓                                                                                            | Browser ✓ · Node —                                    | —                |
-| resize                | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| crop                  | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| rotate                | ✓ any angle                    | ✓ 90° multiples                                                                              | ✓ any angle                                           | —                |
-| flip                  | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| grayscale             | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| invert                | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| blur                  | ✓                              | ✓                                                                                            | ✓ Canvas2D filter                                     | —                |
-| trim                  | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| extend                | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| sharpen               | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| median                | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| dilate / erode        | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| clahe                 | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| flatten / unflatten   | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| gamma                 | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| normalize             | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| threshold             | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| linear                | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| modulate              | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| opacity               | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| tint                  | ✓                              | ✓                                                                                            | ✓                                                     | —                |
-| SVG optimize          | —                              | —                                                                                            | —                                                     | ✓                |
+|                       | sharp                                                                     | napi                                                                                         | canvas                                                | svgo             |
+| --------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------- | ---------------- |
+| Environment           | Node · Bun                                                                | Node · Browser via the WASI build                                                            | Browser (native Canvas2D) · Node (`@napi-rs/canvas`)  | Browser + Node   |
+| Dependency            | `sharp` (prebuilt libvips); optional `@img/sharp-wasm32`                  | `@napi-rs/image` (prebuilt `.node`, no compile); browser build: `@napi-rs/image-wasm32-wasi` | None in browsers · optional `@napi-rs/canvas` in Node | `svgo` (pure JS) |
+| Decode                | png · jpeg · webp · avif · gif · svg · tiff · heif/heic · bmp · ico · jxl | png · jpeg · webp · avif · svg (rasterized) · tiff · bmp · ico · pnm · heif/heic             | png · jpeg · webp · avif                              | svg              |
+| Encode                | png · jpeg · webp · avif · gif · tiff · heif/heic · jxl                   | png · jpeg · webp · avif · tiff · bmp · ico · pnm · tga · heic                               | png · jpeg · webp · avif · gif (detected at runtime)  | svg              |
+| Animated input/output | ✓                                                                         | —                                                                                            | —                                                     | —                |
+| autoOrient            | ✓                                                                         | ✓                                                                                            | Browser ✓ · Node —                                    | —                |
+| resize                | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| crop                  | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| rotate                | ✓ any angle                                                               | ✓ 90° multiples                                                                              | ✓ any angle                                           | —                |
+| flip                  | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| grayscale             | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| invert                | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| blur                  | ✓                                                                         | ✓                                                                                            | ✓ Canvas2D filter                                     | —                |
+| trim                  | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| extend                | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| sharpen               | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| median                | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| dilate / erode        | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| clahe                 | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| flatten / unflatten   | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| gamma                 | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| normalize             | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| threshold             | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| linear                | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| modulate              | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| opacity               | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| tint                  | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| contrast              | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| convolve              | ✓                                                                         | ✓ 3×3 only                                                                                   | ✓                                                     | —                |
+| remove / ensure alpha | ✓                                                                         | ✓                                                                                            | ✓                                                     | —                |
+| SVG optimize          | —                                                                         | —                                                                                            | —                                                     | ✓                |
 
-The napiDriver column describes the native Node addon; the browser runs the [WASI build](https://image.napi.rs/docs#browser-webassembly) (`@napi-rs/image-wasm32-wasi`), which requires a module Worker, a `Buffer` polyfill, and cross-origin isolation headers (`COOP`/`COEP`) — hosts without them should use the canvas driver. The canvas driver resolves the same optional Node peer lazily, so it is available as a cross-runtime fallback without forcing a native load in browsers.
+Format availability is platform-dependent: HEIC/HEIF uses OS or libvips codecs, JXL is experimental in sharp, and napi-image disables some published formats. `sharpDriver` also runs on Bun; for sharp WASM install `sharp` together with `@img/sharp-wasm32` — sharp requires a runtime with multi-threaded Wasm workers and explicitly does not support browsers. The napiDriver browser variant uses the [WASI build](https://image.napi.rs/docs#browser-webassembly) and requires a module Worker, a `Buffer` polyfill, and cross-origin isolation headers (`COOP`/`COEP`). The canvas driver resolves its optional Node peer lazily, so it is available as a cross-runtime fallback without forcing a native load in browsers.
 Every cell is also queryable at runtime:
 
 ```ts

@@ -37,12 +37,26 @@ interface NapiTransformer {
     fit?: number | null,
   ): this;
   blur(sigma: number): this;
+  unsharpen(sigma: number, threshold: number): this;
+  filter3x3(kernel: number[]): this;
+  adjustContrast(contrast: number): this;
+  huerotate(hue: number): this;
+  opacity(factor: number): this;
+  fastResize(options: { width: number; height?: number; filter?: number; fit?: number }): this;
   rawPixels(signal?: AbortSignal | null): Promise<Uint8Array>;
   crop(x: number, y: number, width: number, height: number): this;
   png(options?: object | null, signal?: AbortSignal | null): Promise<Uint8Array>;
   jpeg(quality?: number | null, signal?: AbortSignal | null): Promise<Uint8Array>;
   webp(qualityFactor?: number | null, signal?: AbortSignal | null): Promise<Uint8Array>;
+  webpLossless(signal?: AbortSignal | null): Promise<Uint8Array>;
   avif(options?: { quality?: number }, signal?: AbortSignal | null): Promise<Uint8Array>;
+  heic(options?: { quality?: number }, signal?: AbortSignal | null): Promise<Uint8Array>;
+  tiff(signal?: AbortSignal | null): Promise<Uint8Array>;
+  bmp(signal?: AbortSignal | null): Promise<Uint8Array>;
+  ico(signal?: AbortSignal | null): Promise<Uint8Array>;
+  pnm(signal?: AbortSignal | null): Promise<Uint8Array>;
+  tga(signal?: AbortSignal | null): Promise<Uint8Array>;
+  farbfeld(signal?: AbortSignal | null): Promise<Uint8Array>;
 }
 
 interface NapiTransformerConstructor {
@@ -92,6 +106,11 @@ const alphaColorTypes = new Set([1, 3, 5, 7, 9]);
 
 const formats: readonly ImageFormat[] = ["png", "jpeg", "webp", "avif"];
 const mediaTypes: Record<ImageFormat, string> = {
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+  jxl: "image/jxl",
+  pnm: "image/x-portable-anymap",
+  tga: "image/x-tga",
   gif: "image/gif",
   heic: "image/heic",
   heif: "image/heif",
@@ -485,9 +504,64 @@ async function applyOperation(
     case "blur":
       transformer.blur(operation.sigma);
       return;
+    case "sharpen":
+      if (operation.flat !== undefined) {
+        const current = await transformer.metadata(false, signal);
+        const raw = await transformer.rawPixels(signal);
+        const filtered = applyPixelFilter(
+          { data: new Uint8Array(raw), width: current.width, height: current.height },
+          operation,
+        );
+        return {
+          kind: undefined,
+          data: filtered.data,
+          width: filtered.width,
+          height: filtered.height,
+          layout: "rgba8",
+        } as RawImageData;
+      }
+      transformer.unsharpen(operation.sigma ?? 1, operation.jagged ?? 0);
+      return;
+    case "contrast":
+      transformer.adjustContrast(operation.amount);
+      return;
+    case "convolve": {
+      if (
+        operation.width !== 3 ||
+        operation.height !== 3 ||
+        operation.border !== undefined ||
+        (operation.scale !== undefined && operation.scale !== 1) ||
+        (operation.offset !== undefined && operation.offset !== 0)
+      ) {
+        throw new UnImageError("Napi-image convolve only supports unscaled 3×3 kernels.", {
+          code: "UNIMAGE_UNSUPPORTED_OPERATION",
+          operation: "convolve",
+        });
+      }
+      transformer.filter3x3([...operation.kernel]);
+      return;
+    }
+    case "removeAlpha":
+    case "ensureAlpha": {
+      const current = await transformer.metadata(false, signal);
+      const raw = await transformer.rawPixels(signal);
+      const filtered = applyPixelFilter(
+        { data: new Uint8Array(raw), width: current.width, height: current.height },
+        operation as Extract<ImageOperation, { type: "removeAlpha" | "ensureAlpha" }>,
+      );
+      return {
+        kind: undefined,
+        data: filtered.data,
+        width: filtered.width,
+        height: filtered.height,
+        layout: "rgba8",
+      } as RawImageData;
+    }
+    case "opacity":
+      transformer.opacity(operation.factor);
+      return;
     case "trim":
     case "extend":
-    case "sharpen":
     case "median":
     case "dilate":
     case "erode":
@@ -499,7 +573,6 @@ async function applyOperation(
     case "threshold":
     case "linear":
     case "modulate":
-    case "opacity":
     case "tint": {
       const current = await transformer.metadata(false, signal);
       const raw = await transformer.rawPixels(signal);
@@ -523,19 +596,24 @@ async function encode(
   transformer: NapiTransformer,
   format: ImageFormat,
   quality: number | undefined,
+  lossless: boolean | undefined,
   signal: AbortSignal | undefined,
 ): Promise<Uint8Array> {
   checkAborted(signal, "encode");
 
   if (format === "png") return await transformer.png(undefined, signal);
   if (format === "jpeg") return await transformer.jpeg(quality, signal);
-  if (format === "webp") return await transformer.webp(quality, signal);
+  if (format === "webp") {
+    return lossless
+      ? await transformer.webpLossless(signal)
+      : await transformer.webp(quality, signal);
+  }
 
   if (format === "avif") {
     try {
       return quality === undefined
         ? await transformer.avif(undefined, signal)
-        : await transformer.avif({ quality }, signal);
+        : await transformer.avif({ quality: lossless ? 100 : quality }, signal);
     } catch (error) {
       if (signal?.aborted) {
         throw new UnImageError("Image encode was aborted.", {
@@ -550,6 +628,31 @@ async function encode(
       });
     }
   }
+
+  if (format === "heic") {
+    try {
+      const heicOptions: import("@napi-rs/image").HeicConfig = {};
+      if (quality !== undefined) heicOptions.quality = quality;
+      return await transformer.heic(heicOptions, signal);
+    } catch (error) {
+      if (signal?.aborted) {
+        throw new UnImageError("Image encode was aborted.", {
+          code: "UNIMAGE_ABORT",
+          cause: error,
+        });
+      }
+      throw new UnImageError(`The image could not be encoded as ${format}.`, {
+        code: "UNIMAGE_ENCODE",
+        format,
+        cause: error,
+      });
+    }
+  }
+  if (format === "tiff") return await transformer.tiff(signal);
+  if (format === "bmp") return await transformer.bmp(signal);
+  if (format === "ico") return await transformer.ico(signal);
+  if (format === "pnm") return await transformer.pnm(signal);
+  if (format === "tga") return await transformer.tga(signal);
 
   throw new UnImageError("The image cannot be encoded as " + format + ".", {
     code: "UNIMAGE_UNSUPPORTED_FORMAT",
@@ -606,7 +709,7 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
               vector: false,
             },
             encode: {
-              compressionModes: ["lossy"],
+              compressionModes: ["lossy", "lossless"],
               quality: true,
               animation: false,
               metadataPolicies: ["strip"],
@@ -622,7 +725,7 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
               vector: false,
             },
             encode: {
-              compressionModes: ["lossy"],
+              compressionModes: ["lossy", "lossless"],
               quality: true,
               animation: false,
               metadataPolicies: ["strip"],
@@ -640,6 +743,118 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
             encode: {
               compressionModes: [],
               quality: false,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          tiff: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: false,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossless"],
+              quality: false,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          bmp: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: false,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossless"],
+              quality: false,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          ico: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: false,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossless"],
+              quality: false,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          pnm: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: false,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossless"],
+              quality: false,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          tga: {
+            decode: {
+              pixelFormats: [],
+              frames: ["still"],
+              orientation: false,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossless"],
+              quality: false,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          heic: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: false,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossy"],
+              quality: true,
+              animation: false,
+              metadataPolicies: ["strip"],
+              sanitize: false,
+            },
+          },
+          heif: {
+            decode: {
+              pixelFormats: ["rgba8"],
+              frames: ["still"],
+              orientation: false,
+              rasterDensity: false,
+              vector: false,
+            },
+            encode: {
+              compressionModes: ["lossy"],
+              quality: true,
               animation: false,
               metadataPolicies: ["strip"],
               sanitize: false,
@@ -675,6 +890,13 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
           modulate: { supported: true },
           opacity: { supported: true },
           tint: { supported: true },
+          contrast: { supported: true },
+          convolve: {
+            supported: true,
+            notes: ["Only unscaled 3×3 kernels are supported."],
+          },
+          removeAlpha: { supported: true },
+          ensureAlpha: { supported: true },
         },
         notes: [
           "Operations are applied in recipe order through isolated stages.",
@@ -848,6 +1070,19 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
       return Promise.resolve(
         checkRecipeCapabilities(recipe, capabilities, (operation) => {
           const capability = capabilities.operations[operation.type];
+          if (
+            operation.type === "convolve" &&
+            (operation.width !== 3 ||
+              operation.height !== 3 ||
+              operation.border !== undefined ||
+              operation.scale !== undefined ||
+              operation.offset !== undefined)
+          ) {
+            return {
+              supported: false,
+              notes: ["Napi-image convolve only supports unscaled 3×3 kernels."],
+            };
+          }
           if (operation.type === "rotate" && operation.angle % 90 !== 0) {
             return {
               supported: false,
@@ -920,6 +1155,7 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
           transformer,
           recipe.output.format,
           "quality" in recipe.output ? recipe.output.quality : undefined,
+          "lossless" in recipe.output ? recipe.output.lossless : undefined,
           context?.signal,
         );
       }
@@ -958,6 +1194,11 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
           index === recipe.operations.length - 1
             ? "quality" in recipe.output
               ? recipe.output.quality
+              : undefined
+            : undefined,
+          index === recipe.operations.length - 1
+            ? "lossless" in recipe.output
+              ? recipe.output.lossless
               : undefined
             : undefined,
           context?.signal,
