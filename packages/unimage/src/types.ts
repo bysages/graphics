@@ -215,6 +215,50 @@ export interface PixelateOperation {
   size: number;
 }
 
+export type CompositeBlend =
+  | "clear"
+  | "source"
+  | "over"
+  | "in"
+  | "out"
+  | "atop"
+  | "dest"
+  | "dest-over"
+  | "dest-in"
+  | "dest-out"
+  | "dest-atop"
+  | "xor"
+  | "add"
+  | "saturate"
+  | "multiply"
+  | "screen"
+  | "overlay"
+  | "darken"
+  | "lighten"
+  | "color-dodge"
+  | "color-burn"
+  | "hard-light"
+  | "soft-light"
+  | "difference"
+  | "exclusion";
+
+export interface CompositeOperation {
+  type: "composite";
+  /** Runtime layer binding name. Recipes never embed layer bytes. */
+  layer: string;
+  blend?: CompositeBlend;
+  /** Top-left offset. `x` and `y` must be supplied together and take precedence over position. */
+  x?: number;
+  y?: number;
+  /** Anchor used when x/y are absent; defaults to center. */
+  position?: Exclude<ImagePosition, "entropy" | "attention">;
+  tile?: boolean;
+  /** Additional layer alpha, from 0 through 1. */
+  opacity?: number;
+}
+
+export type ImageLayerBindings = Readonly<Record<string, RawImageData>>;
+
 export interface ConvolveOperation {
   kernel: readonly number[];
   width: number;
@@ -334,6 +378,7 @@ export type ImageOperation =
   | ColorMatrixOperation
   | PosterizeOperation
   | PixelateOperation
+  | CompositeOperation
   | RemoveAlphaOperation
   | EnsureAlphaOperation;
 
@@ -398,7 +443,11 @@ export interface ImageCapabilityResult {
 
 export interface DriverRequestContext {
   signal?: AbortSignal | undefined;
+  /** Pixels bound by the caller for composite operations; recipes only store names. */
+  layers?: ImageLayerBindings | undefined;
 }
+
+export interface ImageTransformOptions extends DriverRequestContext {}
 
 export interface ImageDecodeRequest extends ImageInputDecodeOptions {
   signal?: AbortSignal | undefined;
@@ -435,7 +484,7 @@ export interface ImageManager {
   transform(
     input: ImageInput,
     recipe: ImageRecipe,
-    options?: { signal?: AbortSignal },
+    options?: ImageTransformOptions,
   ): Promise<ImageResult>;
   dispose(): Promise<void>;
 }

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 
+import sharp from "sharp";
 import { describe, expect, it } from "vite-plus/test";
 
 import { sharpDriver } from "../../src/drivers/sharp";
@@ -204,6 +205,26 @@ describe("sharpDriver", () => {
     expect(result.metadata).toMatchObject({ width: 16, height: 16 });
   });
 
+  it("preserves metadata through pixel fallback materialization", async () => {
+    const input = await sharp({
+      create: { width: 4, height: 4, channels: 4, background: "blue" },
+    })
+      .withMetadata({ exif: { IFD0: { ImageDescription: "keep-me" } } })
+      .png()
+      .toBuffer();
+    const result = await driver.transform(input, {
+      operations: [
+        {
+          type: "colorMatrix",
+          matrix: [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0],
+        },
+      ],
+      output: { format: "png", metadataPolicy: "preserve" },
+    });
+    if (result.kind !== "encoded") throw new TypeError("Expected encoded output.");
+    const metadata = await sharp(result.data).metadata();
+    expect(Buffer.from(metadata.exif!).toString("latin1")).toContain("keep-me");
+  });
   it("keeps multi-frame output for webp when the animated flag is set", async () => {
     const gif = await animatedGif();
     const result = await driver.transform(

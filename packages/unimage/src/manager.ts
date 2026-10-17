@@ -12,9 +12,11 @@ import type {
   ImagePipelineConfig,
   ImageRecipe,
   ImageResult,
+  ImageTransformOptions,
   RawImageFrame,
   RawImageSequence,
 } from "./types";
+import { validateLayerBindings } from "./utils/composite";
 import { sniffImageFormat } from "./utils/format";
 import { isRawImageData } from "./utils/input";
 
@@ -132,7 +134,7 @@ export function createImageManager(options: ImageManagerOptions): ImageManager {
     async transform(
       input: ImageInput,
       recipe: ImageRecipe,
-      config?: { signal?: AbortSignal },
+      config?: ImageTransformOptions,
     ): Promise<ImageResult> {
       const parsedRecipe = parseImageRecipe(recipe);
       const sourceFormat = isRawImageData(input) ? undefined : await sniffImageFormat(input);
@@ -173,8 +175,13 @@ export function createImageManager(options: ImageManagerOptions): ImageManager {
         );
       }
 
+      validateLayerBindings(parsedRecipe.operations, config?.layers);
+
       try {
-        const result = await driver.transform(input, parsedRecipe, { signal: config?.signal });
+        const result = await driver.transform(input, parsedRecipe, {
+          signal: config?.signal,
+          layers: config?.layers,
+        });
         if (config?.signal?.aborted) {
           throw new UnImageError("Image processing was aborted.", { code: "UNIMAGE_ABORT" });
         }

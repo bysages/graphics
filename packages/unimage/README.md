@@ -11,6 +11,7 @@
 - 🔌 **Pluggable drivers** — sharp, `@napi-rs/image`, Canvas2D, and SVGO ship in one package; capabilities are queryable at runtime so applications degrade gracefully
 - 🧩 **Composable with `overlayDriver`** — stack drivers the way [unstorage](https://github.com/unjs/unstorage) stacks storage; supported routes execute in order and unavailable optional backends fall through
 - 🌐 **Cross-runtime recipes** — shared RGBA fallbacks provide broad operation coverage, and capabilities expose backend limits
+- 🎚 **Resource-aware composite** — declare layer operations in serializable recipes while binding RGBA pixels at runtime
 - 🖼 **IPX-compatible server** — keep existing `/w_320,f_webp/id` URLs while swapping the engine; storage delegates to unstorage drivers, and the handler plugs straight into h3 and Nitro
 - 🛡 **SSRF guardrails built in** — protocol and host allow-lists, DNS/reserved-address blocking, and per-hop redirect validation on remote storage
 
@@ -145,6 +146,60 @@ const proxy = createImageProxy({
 });
 ```
 
+#### Composite layers
+
+Composite recipes reference a layer by name; RGBA8 pixels are bound only when a pipeline runs. This keeps recipes small and cache keys stable while letting queues, proxies, and applications own resource IO.
+
+```ts
+const watermark = await image.decode(watermarkBytes);
+
+await image.transform(
+  sourceBytes,
+  {
+    operations: [
+      { type: "resize", width: 1280 },
+      {
+        type: "composite",
+        layer: "watermark",
+        position: "right bottom",
+        blend: "over",
+        opacity: 0.85,
+      },
+    ],
+    output: { format: "webp", quality: 82 },
+  },
+  {
+    layers: {
+      watermark: {
+        data: watermark.data,
+        width: watermark.width,
+        height: watermark.height,
+        layout: "rgba8",
+      },
+    },
+  },
+);
+```
+
+`layer` is a binding name, not image data. Bindings must be straight (non-premultiplied) RGBA8 pixels with dimensions matching `width * height * 4`. `x/y` are the top-left offset and take precedence over `position`; negative offsets are clipped to the destination. `tile` preserves the resolved anchor as its phase. `digestRecipe` identifies the recipe, not layer contents; HTTP responses from the server adapter use the final output for ETags.
+
+Opaque layers have consistent geometry and alpha coverage across sharp, napi-image, and Canvas. Translucent layers with separable blend modes can differ between sharp/libvips premultiplied-alpha compositing and the straight-alpha W3C behavior used by napi-image and Canvas; capabilities expose this note. Porter-Duff operations apply to the whole destination according to the W3C formulas: `clear` replaces everything, and operations such as `in` clear the destination outside the layer footprint.
+
+In ImageProxy URLs, `composite` accepts a simple alias or storage key and is always the final operation. Remote layer URLs are intentionally rejected; configure a layer alias instead:
+
+```ts
+const proxy = createImageProxy({
+  storage,
+  alias: { "/watermark": "/assets/watermark.png" },
+});
+```
+
+```text
+/composite_watermark,composite_opacity_0.85,w_1280,f_webp/photo.png
+```
+
+Layer failures propagate (a missing layer is 404, never a silently un-watermarked image). Conditional requests use the newest source/layer mtime, while cache lifetime is the minimum of both.
+
 #### Recipes, decode, and capabilities
 
 `decode` controls how input is read, not how output is encoded:
@@ -215,6 +270,7 @@ if (!capability.supported) throw new Error("This runtime cannot run the pipeline
 | `removealpha`                                     |           | `removealpha`                   | Flatten alpha to fully opaque                                                                                                 |
 | `ensurealpha`                                     |           | `ensurealpha`                   | Add an alpha channel                                                                                                          |
 | `flatten` / `unflatten`                           |           | `flatten`                       | Merge/remove alpha against a background                                                                                       |
+| `composite`                                       |           | `composite_watermark`           | Compose an alias/storage-key layer; options use the `composite_*` prefix and append last                                      |
 | `animated`                                        | `a`       | `animated`                      | Decode every frame; GIF output uses all frames by default                                                                     |
 
 Unknown modifiers are rejected rather than silently ignored. Alias keys match complete path segments, so `/blog` does not capture `/blog-2`.
@@ -278,6 +334,7 @@ await image.transform(pngBytes, { operations: [], output: { format: "png" } });
 | colorMatrix           | ✓ RGBA fallback                                                                                          | ✓ RGBA fallback                                                                              | ✓ RGBA fallback                                       | —                |
 | posterize             | ✓ RGBA fallback                                                                                          | ✓ RGBA fallback                                                                              | ✓ RGBA fallback                                       | —                |
 | pixelate              | ✓ RGBA fallback                                                                                          | ✓ RGBA fallback                                                                              | ✓ RGBA fallback                                       | —                |
+| composite             | ✓ native                                                                                                 | ✓ native                                                                                     | ✓ Canvas2D · RGBA fallback for saturate               | —                |
 | remove / ensure alpha | ✓                                                                                                        | ✓                                                                                            | ✓                                                     | —                |
 | SVG optimize          | —                                                                                                        | —                                                                                            | —                                                     | ✓                |
 

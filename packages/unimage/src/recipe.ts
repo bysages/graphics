@@ -1,6 +1,7 @@
 import { UnImageError } from "./errors";
 import type {
   FitMode,
+  CompositeBlend,
   ImagePosition,
   ResizeKernel,
   FrameSelection,
@@ -63,6 +64,7 @@ const operationTypes: readonly ImageOperationType[] = [
   "colorMatrix",
   "posterize",
   "pixelate",
+  "composite",
   "removeAlpha",
   "ensureAlpha",
 ];
@@ -195,9 +197,50 @@ const operationKeys: Record<ImageOperationType, readonly string[]> = {
   colorMatrix: ["type", "matrix"],
   posterize: ["type", "levels", "alpha"],
   pixelate: ["type", "size"],
+  composite: ["type", "layer", "blend", "x", "y", "position", "tile", "opacity"],
   removeAlpha: ["type"],
   ensureAlpha: ["type", "alpha"],
 };
+
+const compositeBlends: readonly CompositeBlend[] = [
+  "clear",
+  "source",
+  "over",
+  "in",
+  "out",
+  "atop",
+  "dest",
+  "dest-over",
+  "dest-in",
+  "dest-out",
+  "dest-atop",
+  "xor",
+  "add",
+  "saturate",
+  "multiply",
+  "screen",
+  "overlay",
+  "darken",
+  "lighten",
+  "color-dodge",
+  "color-burn",
+  "hard-light",
+  "soft-light",
+  "difference",
+  "exclusion",
+];
+
+const compositePositions = [
+  "top",
+  "right top",
+  "right",
+  "right bottom",
+  "bottom",
+  "left bottom",
+  "left",
+  "left top",
+  "center",
+] as const;
 
 function parseOperation(value: unknown): ImageOperation {
   if (!isRecord(value) || !isOperationType(value.type)) {
@@ -484,6 +527,70 @@ function parseOperation(value: unknown): ImageOperation {
         type: "pixelate",
         size: parseIntegerRange(value.size, "pixelate.size", 1, 256),
       };
+    case "composite": {
+      const layer = value.layer;
+      if (typeof layer !== "string" || layer === "" || /[\p{Cc}]/u.test(layer)) {
+        throw new UnImageError("composite.layer must be a non-empty binding name.", {
+          code: "UNIMAGE_INVALID_RECIPE",
+          operation: "composite",
+        });
+      }
+      const operation: Extract<ImageOperation, { type: "composite" }> = {
+        type: "composite",
+        layer,
+      };
+      if (hasProperty(value, "blend")) {
+        operation.blend = parseEnum(value.blend, compositeBlends, "composite.blend");
+      }
+      if (hasProperty(value, "x") || hasProperty(value, "y")) {
+        if (
+          !Number.isInteger(value.x) ||
+          !Number.isInteger(value.y) ||
+          (value.x as number) < -100000000 ||
+          (value.x as number) > 100000000 ||
+          (value.y as number) < -100000000 ||
+          (value.y as number) > 100000000
+        ) {
+          throw new UnImageError(
+            "composite.x and composite.y must be integers supplied together.",
+            {
+              code: "UNIMAGE_INVALID_RECIPE",
+              operation: "composite",
+            },
+          );
+        }
+        operation.x = value.x as number;
+        operation.y = value.y as number;
+      }
+      if (hasProperty(value, "position")) {
+        operation.position = parseEnum(value.position, compositePositions, "composite.position");
+      }
+      if (hasProperty(value, "tile")) {
+        if (typeof value.tile !== "boolean") {
+          throw new UnImageError("composite.tile must be a boolean.", {
+            code: "UNIMAGE_INVALID_RECIPE",
+            operation: "composite",
+          });
+        }
+        operation.tile = value.tile;
+      }
+      if (hasProperty(value, "opacity")) {
+        const opacity = value.opacity;
+        if (
+          typeof opacity !== "number" ||
+          !Number.isFinite(opacity) ||
+          opacity < 0 ||
+          opacity > 1
+        ) {
+          throw new UnImageError("composite.opacity must be between 0 and 1.", {
+            code: "UNIMAGE_INVALID_RECIPE",
+            operation: "composite",
+          });
+        }
+        operation.opacity = opacity;
+      }
+      return operation;
+    }
     case "removeAlpha":
       return { type: "removeAlpha" };
     case "ensureAlpha": {

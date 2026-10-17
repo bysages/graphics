@@ -7,7 +7,16 @@ import { svgoDriver, type SvgoDriverOptions } from "./drivers/svgo";
 import { createImageManager } from "./manager";
 import type { ProxyStorage } from "./storage/types";
 import { normalizeStorage, type ProxyStorageInput } from "./storage/unstorage";
-import type { FitMode, ImageFormat, ImageMetadata, ImageOperation, ImageManager } from "./types";
+import type {
+  CompositeBlend,
+  FitMode,
+  ImageFormat,
+  ImageLayerBindings,
+  ImagePosition,
+  ImageMetadata,
+  ImageOperation,
+  ImageManager,
+} from "./types";
 import { normalizeMaxAge } from "./utils/cache";
 
 export type ImageProxySourceMeta = {
@@ -92,6 +101,13 @@ export interface ImageProxyModifiers {
   lightness?: number | string;
   opacity?: number | string;
   tint?: number | string;
+  composite?: string;
+  composite_blend?: string;
+  composite_opacity?: number | string;
+  composite_position?: string;
+  composite_tile?: FlagModifier;
+  composite_x?: number | string;
+  composite_y?: number | string;
   grayscale?: FlagModifier;
   animated?: FlagModifier;
   a?: FlagModifier;
@@ -197,6 +213,13 @@ const knownModifiers = new Set<string>([
   "lightness",
   "opacity",
   "tint",
+  "composite",
+  "composite_blend",
+  "composite_opacity",
+  "composite_position",
+  "composite_tile",
+  "composite_x",
+  "composite_y",
   "grayscale",
   "animated",
   "a",
@@ -635,6 +658,72 @@ export function modifiersToRecipe(
     operations.push(trim);
   }
   if (toFlag(modifiers.unflatten)) operations.push({ type: "unflatten" });
+  if (modifiers.composite !== undefined) {
+    if (
+      modifiers.composite === "" ||
+      /[/:=&,\s]/.test(modifiers.composite) ||
+      /[\p{Cc}]/u.test(modifiers.composite)
+    ) {
+      throw invalidModifier("composite", "must be an alias or simple storage key");
+    }
+    const operation: Extract<ImageOperation, { type: "composite" }> = {
+      type: "composite",
+      layer: modifiers.composite,
+    };
+    if (modifiers.composite_blend !== undefined) {
+      operation.blend = parseCompositeBlend(modifiers.composite_blend);
+    }
+    if (modifiers.composite_opacity !== undefined) {
+      const opacity = parseNumber(modifiers.composite_opacity, "composite_opacity");
+      if (opacity < 0 || opacity > 1) {
+        throw invalidModifier("composite_opacity", "must be between 0 and 1");
+      }
+      operation.opacity = opacity;
+    }
+    if (modifiers.composite_position !== undefined) {
+      const normalized = modifiers.composite_position.replace(/-/g, " ").toLowerCase();
+      if (
+        ![
+          "top",
+          "right top",
+          "right",
+          "right bottom",
+          "bottom",
+          "left bottom",
+          "left",
+          "left top",
+          "center",
+          "centre",
+        ].includes(normalized)
+      ) {
+        throw invalidModifier("composite_position", "is invalid");
+      }
+      operation.position =
+        normalized === "centre"
+          ? "center"
+          : (normalized as Exclude<ImagePosition, "entropy" | "attention">);
+    }
+    if (toFlag(modifiers.composite_tile)) operation.tile = true;
+    if (modifiers.composite_x !== undefined || modifiers.composite_y !== undefined) {
+      const x = Number(modifiers.composite_x);
+      const y = Number(modifiers.composite_y);
+      if (
+        modifiers.composite_x === undefined ||
+        modifiers.composite_y === undefined ||
+        !Number.isInteger(x) ||
+        !Number.isInteger(y) ||
+        x < -100000000 ||
+        x > 100000000 ||
+        y < -100000000 ||
+        y > 100000000
+      ) {
+        throw invalidModifier("composite_x", "and composite_y must be integers supplied together");
+      }
+      operation.x = x;
+      operation.y = y;
+    }
+    operations.push(operation);
+  }
   const requestedFormat = modifiers.format ?? modifiers.f;
   const sourceFormat = metadata.format;
   // ImageProxy semantics: an unknown requested format silently falls back to the
@@ -681,6 +770,7 @@ export function createImageProxy(userOptions: ImageProxyOptions): ImageProxy {
     maxAge: normalizeMaxAge(userOptions.maxAge) ?? 60,
     maxOutputDimension: userOptions.maxOutputDimension ?? defaultMaxOutputDimension,
     alias: normalizeAlias(userOptions.alias),
+    layerAlias: normalizeLayerAlias(userOptions.alias),
   };
   const rasterDriver =
     options.driver ??
@@ -725,10 +815,95 @@ export function createImageProxy(userOptions: ImageProxyOptions): ImageProxy {
       });
     }
     const resolvedStorage: ProxyStorage = source;
+    if (modifiers.composite !== undefined && storage === undefined) {
+      throw new HTTPError({
+        status: 500,
+        statusText: "UNIMAGE_NO_STORAGE",
+        message: "Composite layers require configured local storage.",
+      });
+    }
+    const layerStorage: ProxyStorage | undefined = storage;
+    const compositeStorage = (): ProxyStorage => {
+      if (layerStorage === undefined) {
+        throw new HTTPError({
+          status: 500,
+          statusText: "UNIMAGE_NO_STORAGE",
+          message: "Composite layers require configured local storage.",
+        });
+      }
+      return layerStorage;
+    };
 
     let sourceMetadata: Promise<ImageMetadata> | undefined;
     let sourceMeta: Promise<ImageProxySourceMeta> | undefined;
     let sourceData: Promise<Uint8Array | ArrayBuffer> | undefined;
+    const compositeLayerId = resolveLayerAlias(modifiers.composite, options.layerAlias);
+    let layerData: Promise<Uint8Array | ArrayBuffer> | undefined;
+    let layerBinding: Promise<ImageLayerBindings> | undefined;
+
+    function requireCompositeLayerId(): string {
+      if (compositeLayerId === undefined) {
+        throw new HTTPError({
+          status: 400,
+          statusText: "UNIMAGE_INVALID_MODIFIER",
+          message: "The composite layer resource is missing.",
+        });
+      }
+      return compositeLayerId;
+    }
+
+    function awaitLayerData(): Promise<Uint8Array | ArrayBuffer> {
+      layerData ??= (async () => {
+        const id = requireCompositeLayerId();
+        const data = await compositeStorage().getData(
+          id,
+          requestOptions.signal === undefined ? {} : { signal: requestOptions.signal },
+        );
+        if (data === undefined) {
+          throw new HTTPError({
+            status: 404,
+            statusText: "UNIMAGE_NOT_FOUND",
+            message: `Composite layer resource not found: ${id}`,
+          });
+        }
+        return data;
+      })();
+      return layerData;
+    }
+
+    async function awaitLayerBinding(): Promise<ImageLayerBindings> {
+      layerBinding ??= (async () => {
+        const bytes = await awaitLayerData();
+        const layerMetadata = await manager.metadata(
+          bytes,
+          requestOptions.signal === undefined ? {} : { signal: requestOptions.signal },
+        );
+        const maximum =
+          options.maxOutputDimension === false
+            ? Number.POSITIVE_INFINITY
+            : options.maxOutputDimension;
+        if (layerMetadata.width > maximum || layerMetadata.height > maximum) {
+          throw new HTTPError({
+            status: 400,
+            statusText: "UNIMAGE_LAYER_TOO_LARGE",
+            message: `Composite layer dimensions must not exceed ${maximum} pixels.`,
+          });
+        }
+        const frame = await manager.decode(
+          bytes,
+          requestOptions.signal === undefined ? {} : { signal: requestOptions.signal },
+        );
+        return {
+          [modifiers.composite as string]: {
+            data: frame.data,
+            width: frame.width,
+            height: frame.height,
+            layout: "rgba8",
+          },
+        };
+      })();
+      return layerBinding;
+    }
 
     async function getSourceMetadata() {
       sourceMetadata ??= manager.metadata(
@@ -771,8 +946,28 @@ export function createImageProxy(userOptions: ImageProxyOptions): ImageProxy {
               message: `Resource not found: ${resolvedId}`,
             });
           }
-          const mtime = metadata.mtime === undefined ? undefined : new Date(metadata.mtime);
-          const maxAge = normalizeMaxAge(metadata.maxAge) ?? options.maxAge;
+          let mtime = metadata.mtime === undefined ? undefined : new Date(metadata.mtime);
+          let maxAge = normalizeMaxAge(metadata.maxAge) ?? options.maxAge;
+          if (modifiers.composite !== undefined) {
+            const layerMetadata = await compositeStorage().getMeta(
+              requireCompositeLayerId(),
+              signal === undefined ? {} : { signal },
+            );
+            if (layerMetadata === undefined) {
+              throw new HTTPError({
+                status: 404,
+                statusText: "UNIMAGE_NOT_FOUND",
+                message: `Composite layer resource not found: ${requireCompositeLayerId()}`,
+              });
+            }
+            const layerTime =
+              layerMetadata.mtime === undefined ? undefined : new Date(layerMetadata.mtime);
+            if (layerTime !== undefined && (mtime === undefined || layerTime > mtime)) {
+              mtime = layerTime;
+            }
+            const layerMaxAge = normalizeMaxAge(layerMetadata.maxAge) ?? options.maxAge;
+            maxAge = Math.min(maxAge, layerMaxAge);
+          }
           return {
             ...(mtime === undefined ? {} : { mtime }),
             maxAge,
@@ -785,11 +980,11 @@ export function createImageProxy(userOptions: ImageProxyOptions): ImageProxy {
         const signal = requestOptions?.signal;
         const metadata = await getSourceMetadata();
         const recipe = modifiersToRecipe(modifiers, metadata, options.maxOutputDimension);
-        const result = await manager.transform(
-          await awaitData(),
-          recipe,
-          signal === undefined ? {} : { signal },
-        );
+        const layers = modifiers.composite === undefined ? undefined : await awaitLayerBinding();
+        const result = await manager.transform(await awaitData(), recipe, {
+          signal,
+          layers,
+        });
         return {
           data: result.data,
           format: result.format,
@@ -802,6 +997,63 @@ export function createImageProxy(userOptions: ImageProxyOptions): ImageProxy {
 
 function hasProtocol(id: string): boolean {
   return /^[a-z][a-z\d+\-.]*:/i.test(id);
+}
+
+const compositeBlendNames = [
+  "clear",
+  "source",
+  "over",
+  "in",
+  "out",
+  "atop",
+  "dest",
+  "dest-over",
+  "dest-in",
+  "dest-out",
+  "dest-atop",
+  "xor",
+  "add",
+  "saturate",
+  "multiply",
+  "screen",
+  "overlay",
+  "darken",
+  "lighten",
+  "color-dodge",
+  "color-burn",
+  "hard-light",
+  "soft-light",
+  "difference",
+  "exclusion",
+] as const;
+
+function parseCompositeBlend(value: string): CompositeBlend {
+  const normalized = value.toLowerCase();
+  if (!(compositeBlendNames as readonly string[]).includes(normalized)) {
+    throw invalidModifier("composite_blend", "is invalid");
+  }
+  return normalized as CompositeBlend;
+}
+
+function normalizeLayerAlias(alias: Record<string, string> | undefined): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(alias ?? {}).map(([key, value]) => [key.replace(/^\/+/, ""), value]),
+  );
+}
+
+function resolveLayerAlias(
+  value: string | undefined,
+  aliases: Record<string, string>,
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (hasProtocol(value)) {
+    throw new HTTPError({
+      status: 400,
+      statusText: "UNIMAGE_INVALID_MODIFIER",
+      message: "The composite layer must use configured storage, not a remote URL.",
+    });
+  }
+  return aliases[value] ?? `/${value.replace(/^\/+/, "")}`;
 }
 
 function normalizeAlias(alias: Record<string, string> | undefined): Record<string, string> {

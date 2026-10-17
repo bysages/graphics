@@ -20,6 +20,7 @@ import type {
   RawImageSequence,
 } from "../types";
 import { abortable, assertNotAborted } from "../utils/abort";
+import { prepareCompositeLayer } from "../utils/composite";
 import { applyPixelFilter, parseColor } from "../utils/filters";
 import { sniffImageFormat } from "../utils/format";
 
@@ -56,6 +57,7 @@ const nativeOperations = new Set<ImageOperation["type"]>([
   "convolve",
   "removeAlpha",
   "ensureAlpha",
+  "composite",
 ]);
 
 const fallbackOperations = new Set<ImageOperation["type"]>([
@@ -69,6 +71,20 @@ const fallbackOperations = new Set<ImageOperation["type"]>([
   "unflatten",
 ]);
 
+type PixelFallbackOperation = Extract<
+  ImageOperation,
+  {
+    type:
+      | "dilate"
+      | "erode"
+      | "clahe"
+      | "unflatten"
+      | "opacity"
+      | "colorMatrix"
+      | "posterize"
+      | "pixelate";
+  }
+>;
 const sharpFormats: Record<string, ImageFormat> = {
   jpeg: "jpeg",
   jpg: "jpeg",
@@ -84,6 +100,79 @@ const sharpFormats: Record<string, ImageFormat> = {
   ico: "ico",
   jxl: "jxl",
 };
+
+async function materializeSharp(
+  factory: SharpFactory,
+  instance: SharpInstance,
+  preserveMetadata: boolean,
+  signal: AbortSignal | undefined,
+  reason: string,
+): Promise<SharpInstance> {
+  const normalized = instance.ensureAlpha().toColourspace("srgb");
+  if (preserveMetadata) {
+    // PNG carries source metadata across the stage boundary; raw pixels do not.
+    const materialized = await abortable(normalized.png().toBuffer(), signal, reason);
+    return factory(materialized).withMetadata();
+  }
+  const { data, info } = await abortable(
+    normalized.raw().toBuffer({ resolveWithObject: true }),
+    signal,
+    reason,
+  );
+  return factory(Buffer.from(data), {
+    raw: { width: info.width, height: info.height, channels: 4 },
+  });
+}
+
+async function applyPixelFilterSharp(
+  factory: SharpFactory,
+  instance: SharpInstance,
+  operation: PixelFallbackOperation,
+  preserveMetadata: boolean,
+  signal: AbortSignal | undefined,
+): Promise<SharpInstance> {
+  const normalized = instance.ensureAlpha().toColourspace("srgb");
+  const { data, info } = await abortable(
+    normalized.raw().toBuffer({ resolveWithObject: true }),
+    signal,
+    "pixel fallback",
+  );
+  const filtered = applyPixelFilter(
+    {
+      data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      width: info.width,
+      height: info.height,
+    },
+    operation,
+  );
+
+  if (!preserveMetadata) {
+    return factory(Buffer.from(filtered.data), {
+      raw: { width: filtered.width, height: filtered.height, channels: 4 },
+    });
+  }
+
+  const carrier = factory(
+    await abortable(normalized.png().toBuffer(), signal, "pixel fallback"),
+  ).withMetadata();
+  const materialized = await abortable(
+    carrier
+      .composite([
+        {
+          input: Buffer.from(filtered.data),
+          raw: { width: filtered.width, height: filtered.height, channels: 4 },
+          left: 0,
+          top: 0,
+          blend: "source",
+        },
+      ])
+      .png()
+      .toBuffer(),
+    signal,
+    "pixel fallback",
+  );
+  return factory(materialized).withMetadata();
+}
 
 function toColorLike(value: string | undefined): {
   r: number;
@@ -423,6 +512,15 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
       notes: ["Applied through the built-in RGBA pixel pipeline."],
     };
 
+  operationCapabilities.composite = {
+    supported: true,
+    notes: [
+      "Native compositing.",
+      "The pipeline is materialized at each composite to preserve recipe order.",
+      "Translucent layers with separable blends follow libvips premultiplied-alpha behavior.",
+    ],
+  };
+
   return {
     name: "sharp",
 
@@ -663,6 +761,39 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
 
       for (const operation of recipe.operations) {
         assertNotAborted(context?.signal, "transform");
+        if (operation.type === "composite") {
+          const currentMetadata = await instance.metadata();
+          const layer = prepareCompositeLayer(
+            { width: currentMetadata.width, height: currentMetadata.height },
+            operation,
+            context?.layers,
+          );
+          if (layer !== undefined) {
+            instance = instance.composite([
+              {
+                input: Buffer.from(layer.image.data),
+                raw: {
+                  width: layer.image.width,
+                  height: layer.image.height,
+                  channels: 4,
+                },
+                left: layer.left,
+                top: layer.top,
+                blend: operation.blend ?? "over",
+              },
+            ]);
+          }
+          // Materialize immediately: sharp positions composite at the end of its
+          // native pipeline, so deferred composition would reorder later operations.
+          instance = await materializeSharp(
+            factory,
+            instance,
+            recipe.output.metadataPolicy === "preserve",
+            context?.signal,
+            "composite",
+          );
+          continue;
+        }
         if (nativeOperations.has(operation.type)) {
           instance = applyNativeOperation(instance, operation);
           continue;
@@ -673,35 +804,13 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
             operation: operation.type,
           });
         }
-        const { data, info } = await abortable(
-          instance.ensureAlpha().toColourspace("srgb").raw().toBuffer({ resolveWithObject: true }),
+        instance = await applyPixelFilterSharp(
+          factory,
+          instance,
+          operation as PixelFallbackOperation,
+          recipe.output.metadataPolicy === "preserve",
           context?.signal,
-          "pixel fallback",
         );
-        const filtered = applyPixelFilter(
-          {
-            data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
-            width: info.width,
-            height: info.height,
-          },
-          operation as Extract<
-            ImageOperation,
-            {
-              type:
-                | "dilate"
-                | "erode"
-                | "clahe"
-                | "unflatten"
-                | "opacity"
-                | "colorMatrix"
-                | "posterize"
-                | "pixelate";
-            }
-          >,
-        );
-        instance = factory(Buffer.from(filtered.data), {
-          raw: { width: filtered.width, height: filtered.height, channels: 4 },
-        });
       }
 
       const encoded = await abortable(

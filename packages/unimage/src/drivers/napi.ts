@@ -15,6 +15,7 @@ import type {
   RawImageData,
 } from "../types";
 import { assertNotAborted } from "../utils/abort";
+import { prepareCompositeLayer } from "../utils/composite";
 import { applyPixelFilter, parseColor } from "../utils/filters";
 import { sniffImageFormat } from "../utils/format";
 import { alignedOrigin, focusPoint } from "../utils/geometry";
@@ -60,6 +61,18 @@ interface NapiTransformer {
   pnm(signal?: AbortSignal | null): Promise<Uint8Array>;
   tga(signal?: AbortSignal | null): Promise<Uint8Array>;
   farbfeld(signal?: AbortSignal | null): Promise<Uint8Array>;
+  composite(
+    onTop: Uint8Array,
+    options?: {
+      top?: number;
+      left?: number;
+      gravity?: number;
+      blend?: number;
+      tile?: boolean;
+      opacity?: number;
+    } | null,
+    signal?: AbortSignal | null,
+  ): this;
 }
 
 interface NapiTransformerConstructor {
@@ -105,6 +118,34 @@ const orientationRotate180 = 3;
 const orientationRotate90Cw = 6;
 const orientationRotate270Cw = 8;
 const alphaColorTypes = new Set([1, 3, 5, 7, 9]);
+
+const napiBlendModes: Record<import("../types").CompositeBlend, number> = {
+  clear: 1,
+  source: 2,
+  over: 0,
+  in: 3,
+  out: 4,
+  atop: 5,
+  dest: 6,
+  "dest-over": 7,
+  "dest-in": 8,
+  "dest-out": 9,
+  "dest-atop": 10,
+  xor: 11,
+  add: 12,
+  saturate: 13,
+  multiply: 14,
+  screen: 15,
+  overlay: 16,
+  darken: 17,
+  lighten: 18,
+  "color-dodge": 19,
+  "color-burn": 20,
+  "hard-light": 21,
+  "soft-light": 22,
+  difference: 23,
+  exclusion: 24,
+};
 
 const formats: readonly ImageFormat[] = [
   "png",
@@ -451,13 +492,33 @@ function coverCropOrigin(
 }
 
 async function applyOperation(
+  module: NapiModule,
   transformer: NapiTransformer,
   operation: ImageOperation,
   signal: AbortSignal | undefined,
+  layers: import("../types").ImageLayerBindings | undefined,
 ): Promise<RawImageData | void> {
   assertNotAborted(signal, "transform");
 
   switch (operation.type) {
+    case "composite": {
+      const current = await toRgbaState(transformer, signal);
+      const layer = prepareCompositeLayer(current, operation, layers);
+      if (layer === undefined || operation.blend === "dest") return current;
+      const encoded = await module.Transformer.fromRgbaPixels(
+        layer.image.data,
+        layer.image.width,
+        layer.image.height,
+      ).png(undefined, signal);
+      transformer.composite(encoded, {
+        left: layer.left,
+        top: layer.top,
+        blend: napiBlendModes[operation.blend ?? "over"],
+      });
+      // Napi-RS reorders composite against some native operations, so each
+      // composite is materialized to keep the operation sequence explicit.
+      return await toRgbaState(transformer, signal);
+    }
     case "autoOrient":
       transformer.rotate();
       return;
@@ -980,6 +1041,14 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
               supported: true,
               notes: ["Applied through the built-in RGBA pixel pipeline."],
             },
+            composite: {
+              supported: true,
+              notes: [
+                "Native compositing; each composite is materialized to preserve recipe order.",
+                "Translucent layers with separable blends follow straight-alpha behavior.",
+                "Animated input is supported only by the sharp driver.",
+              ],
+            },
             removeAlpha: { supported: true },
             ensureAlpha: { supported: true },
           },
@@ -1115,7 +1184,13 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
       for (const operation of recipe.operations) {
         const transformer = await createTransformer(module, state);
         try {
-          const nextState = await applyOperation(transformer, operation, context?.signal);
+          const nextState = await applyOperation(
+            module,
+            transformer,
+            operation,
+            context?.signal,
+            context?.layers,
+          );
           if (nextState) {
             state = nextState;
             continue;

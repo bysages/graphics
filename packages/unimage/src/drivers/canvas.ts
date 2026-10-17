@@ -14,6 +14,7 @@ import type {
   RawImageData,
 } from "../types";
 import { abortable, assertNotAborted } from "../utils/abort";
+import { prepareCompositeLayer, type PreparedCompositeLayer } from "../utils/composite";
 import { applyPixelFilter, parseColor, type RgbaImage } from "../utils/filters";
 import { sniffImageFormat } from "../utils/format";
 import { alignedOrigin, focusPoint } from "../utils/geometry";
@@ -31,7 +32,10 @@ interface NodeContext2D {
   imageSmoothingQuality: string;
   filter: string;
   fillRect(x: number, y: number, width: number, height: number): void;
+  clearRect(x: number, y: number, width: number, height: number): void;
   drawImage(image: unknown, ...arguments_: number[]): void;
+  globalAlpha: number;
+  globalCompositeOperation: string;
   getImageData(sx: number, sy: number, sw: number, sh: number): ImageDataLike;
   putImageData(image: ImageDataLike, dx: number, dy: number): void;
   translate(x: number, y: number): void;
@@ -64,7 +68,10 @@ interface SurfaceContext2D {
   imageSmoothingQuality: string;
   filter: string;
   fillRect(x: number, y: number, width: number, height: number): void;
+  clearRect(x: number, y: number, width: number, height: number): void;
   drawImage(image: Surface, ...arguments_: number[]): void;
+  globalAlpha: number;
+  globalCompositeOperation: string;
   getImageData(sx: number, sy: number, sw: number, sh: number): ImageDataLike;
   putImageData(image: ImageDataLike, dx: number, dy: number): void;
   translate(x: number, y: number): void;
@@ -355,6 +362,92 @@ function fromRgbaImage(image: RgbaImage): Surface {
   return surface;
 }
 
+function saturateComposite(base: RgbaImage, layer: PreparedCompositeLayer): RgbaImage {
+  const output = base.data.slice();
+  for (let y = 0; y < layer.image.height; y += 1) {
+    for (let x = 0; x < layer.image.width; x += 1) {
+      const target = ((y + layer.top) * base.width + x + layer.left) * 4;
+      const source = (y * layer.image.width + x) * 4;
+      const sourceAlpha = (layer.image.data[source + 3] as number) / 255;
+      const targetAlpha = (output[target + 3] as number) / 255;
+      const outputAlpha = Math.min(1, sourceAlpha + targetAlpha);
+      if (outputAlpha === 0) {
+        output[target] = 0;
+        output[target + 1] = 0;
+        output[target + 2] = 0;
+        output[target + 3] = 0;
+        continue;
+      }
+      const sourceWeight = Math.min(sourceAlpha, 1 - targetAlpha) * sourceAlpha;
+      const targetWeight = targetAlpha;
+      for (let channel = 0; channel < 3; channel += 1) {
+        const value =
+          (layer.image.data[source + channel] as number) * sourceWeight +
+          (output[target + channel] as number) * targetWeight;
+        output[target + channel] = Math.max(0, Math.min(255, Math.round(value / outputAlpha)));
+      }
+      output[target + 3] = Math.max(0, Math.min(255, Math.round(outputAlpha * 255)));
+    }
+  }
+  return { data: output, width: base.width, height: base.height };
+}
+
+function canvasCompositeOperation(blend: import("../types").CompositeBlend): string | undefined {
+  switch (blend) {
+    case "clear":
+    case "dest":
+    case "saturate":
+      return undefined;
+    case "over":
+      return "source-over";
+    case "add":
+      return "lighter";
+    case "source":
+      return "copy";
+    case "in":
+      return "source-in";
+    case "out":
+      return "source-out";
+    case "atop":
+      return "source-atop";
+    case "dest-over":
+      return "destination-over";
+    case "dest-in":
+      return "destination-in";
+    case "dest-out":
+      return "destination-out";
+    case "dest-atop":
+      return "destination-atop";
+    default:
+      return blend;
+  }
+}
+
+function compositeSurface(
+  surface: Surface,
+  operation: Extract<ImageOperation, { type: "composite" }>,
+  layers: import("../types").ImageLayerBindings | undefined,
+): Surface {
+  const layer = prepareCompositeLayer(surface, operation, layers);
+  if (layer === undefined || operation.blend === "dest") return surface;
+  const blend = operation.blend ?? "over";
+
+  if (blend === "clear") {
+    return createSurface(surface.width, surface.height);
+  }
+  if (blend === "saturate") {
+    return fromRgbaImage(saturateComposite(toRgbaImage(surface), layer));
+  }
+
+  const target = createSurface(surface.width, surface.height);
+  const targetContext = surfaceContext(target);
+  targetContext.drawImage(surface, 0, 0);
+  targetContext.globalAlpha = 1;
+  targetContext.globalCompositeOperation = canvasCompositeOperation(blend) as string;
+  targetContext.drawImage(fromRgbaImage(layer.image), layer.left, layer.top);
+  return target;
+}
+
 function pixelFilterSurface(
   surface: Surface,
   operation: Parameters<typeof applyPixelFilter>[1],
@@ -462,7 +555,11 @@ function blurSurface(surface: Surface, sigma: number): Surface {
   return target;
 }
 
-function applyOperation(surface: Surface, operation: ImageOperation): Surface {
+function applyOperation(
+  surface: Surface,
+  operation: ImageOperation,
+  compositeLayers: import("../types").ImageLayerBindings | undefined,
+): Surface {
   switch (operation.type) {
     case "autoOrient":
       return surface;
@@ -481,6 +578,8 @@ function applyOperation(surface: Surface, operation: ImageOperation): Surface {
       });
     case "invert":
       return pixelMap(surface, (red, green, blue) => [255 - red, 255 - green, 255 - blue]);
+    case "composite":
+      return compositeSurface(surface, operation, compositeLayers);
     case "trim":
     case "extend":
     case "sharpen":
@@ -651,6 +750,13 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
           ...(Object.fromEntries(
             canvasOperationNames.map((operation) => [operation, { supported: true }]),
           ) as ImageCapabilities["operations"]),
+          composite: {
+            supported: true,
+            notes: [
+              "Canvas2D compositing; add maps to lighter and saturate uses the RGBA pipeline.",
+              "Translucent layers with separable blends follow straight-alpha Canvas behavior.",
+            ],
+          },
           autoOrient: {
             supported: nodeCanvas === undefined,
             ...(nodeCanvas === undefined
@@ -806,7 +912,7 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
 
       for (const operation of recipe.operations) {
         assertNotAborted(context?.signal, "transform");
-        surface = applyOperation(surface, operation);
+        surface = applyOperation(surface, operation, context?.layers);
       }
 
       try {

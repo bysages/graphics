@@ -1,3 +1,4 @@
+import sharp from "sharp";
 import { createStorage } from "unstorage";
 import memoryDriver from "unstorage/drivers/memory";
 import { describe, expect, it } from "vite-plus/test";
@@ -83,6 +84,83 @@ function createDriver(): ImageDriver {
 const memory = createStorage({ driver: memoryDriver() });
 await memory.setItemRaw("/source.png", new Uint8Array([8, 8, 8, 8]));
 const storage = fromUnstorage(memory);
+const layerBytes = await sharp({
+  create: { width: 2, height: 2, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 1 } },
+})
+  .png()
+  .toBuffer();
+await memory.setItemRaw("/layer.png", layerBytes);
+
+function createCompositeDriver(): ImageDriver & {
+  transform: (
+    input: import("../../src/types").ImageInput,
+    recipe: ImageRecipe,
+    context?: { layers?: Record<string, unknown> },
+  ) => Promise<import("../../src/types").ImageResult>;
+} {
+  const layerRaw = {
+    data: new Uint8Array(2 * 2 * 4).fill(255),
+    width: 2,
+    height: 2,
+    layout: "rgba8",
+  } as const;
+  return {
+    name: "composite-test",
+    capabilities: async () => ({
+      driver: "composite-test",
+      formats: {
+        png: {
+          decode: {
+            pixelFormats: ["rgba8"],
+            frames: ["still"],
+            orientation: false,
+            rasterDensity: false,
+            vector: false,
+          },
+          encode: {
+            compressionModes: ["lossless"],
+            quality: false,
+            animation: false,
+            metadataPolicies: ["strip"],
+            sanitize: false,
+          },
+        },
+      },
+      metadataRead: true,
+      operations: { composite: { supported: true } },
+    }),
+    checkRecipe: async () => ({
+      supported: true,
+      driver: "composite-test",
+      missing: [],
+      capabilities: {
+        driver: "composite-test",
+        formats: {},
+        metadataRead: true,
+        operations: {},
+      },
+    }),
+    metadata: async (input) => {
+      const bytes =
+        input instanceof Uint8Array ? input : new Uint8Array(await (input as Blob).arrayBuffer());
+      if (bytes.length === 1) return { width: 9999, height: 9999, format: "png" };
+      return bytes === layerBytes
+        ? { width: 2, height: 2, format: "png" }
+        : { width: 4, height: 2, format: "png" };
+    },
+    decode: async () => ({ ...layerRaw, metadata: { width: 2, height: 2, format: "png" } }),
+    async transform(_input, recipe, context) {
+      if (context?.layers?.watermark === undefined) throw new Error("layer was not bound");
+      return {
+        kind: "encoded",
+        data: new Uint8Array([1, 2, 3]),
+        format: recipe.output.format,
+        mediaType: `image/${recipe.output.format}`,
+        metadata: { width: 4, height: 2 },
+      };
+    },
+  };
+}
 
 describe("parseImageProxyURL", () => {
   it("parses ImageProxy-compatible modifier and identifier segments", () => {
@@ -240,6 +318,94 @@ describe("createImageProxyFetchHandler", () => {
     const handler = createImageProxyFetchHandler(proxy);
     const response = await handler("http://localhost/_/http://127.0.0.1/secret.png");
     expect(response.status).toBe(403);
+  });
+});
+
+describe("ImageProxy composite resources", () => {
+  it("binds a storage layer through an alias and appends composite last", async () => {
+    const driver = createCompositeDriver();
+    const proxy = createImageProxy({
+      driver,
+      storage,
+      alias: { "/watermark": "/layer.png" },
+    });
+    await expect(
+      proxy("/source.png", { composite: "watermark", f: "png" }).process(),
+    ).resolves.toMatchObject({ format: "png" });
+
+    const recipe = modifiersToRecipe(
+      { s: "4x2", composite: "watermark", composite_blend: "multiply" },
+      { width: 4, height: 2, format: "png" },
+      8192,
+    );
+    expect(recipe.operations.map((operation) => operation.type)).toEqual(["resize", "composite"]);
+    expect(recipe.operations[1]).toMatchObject({ layer: "watermark", blend: "multiply" });
+  });
+
+  it("rejects remote composite resources and missing layers", async () => {
+    const remote = createImageProxy({
+      driver: createCompositeDriver(),
+      storage,
+      alias: { "/watermark": "/layer.png" },
+    });
+    await expect(
+      remote("/source.png", { composite: "watermark", f: "png" }).process(),
+    ).resolves.toMatchObject({ format: "png" });
+    expect(() =>
+      remote("/source.png", { composite: "http://example.com/watermark.png", f: "png" }),
+    ).toThrow(expect.objectContaining({ status: 400, statusText: "UNIMAGE_INVALID_MODIFIER" }));
+
+    const missing = createImageProxy({ driver: createCompositeDriver(), storage });
+    await expect(
+      missing("/source.png", { composite: "missing", f: "png" }).process(),
+    ).rejects.toMatchObject({ status: 404 });
+
+    const oversized = createImageProxy({
+      driver: createCompositeDriver(),
+      storage: {
+        name: "huge-layer",
+        getMeta: () => ({ maxAge: 60 }),
+        getData: () => new Uint8Array([1]),
+      },
+    });
+    await expect(
+      oversized("/source.png", { composite: "huge", f: "png" }).process(),
+    ).rejects.toMatchObject({ status: 400, statusText: "UNIMAGE_LAYER_TOO_LARGE" });
+  });
+
+  it("uses the newest source or layer mtime for conditional requests", async () => {
+    const proxy = createImageProxy({
+      driver: createCompositeDriver(),
+      alias: { "/watermark": "/layer.png" },
+      storage: {
+        name: "composite-meta",
+        getMeta: (id: string) => ({
+          mtime:
+            id === "/layer.png"
+              ? new Date("2024-01-02T00:00:00Z")
+              : new Date("2024-01-01T00:00:00Z"),
+          maxAge: 120,
+        }),
+        getData: async (id: string) =>
+          id === "/layer.png" ? new Uint8Array(layerBytes) : new Uint8Array([8, 8, 8, 8]),
+      },
+    });
+    await expect(
+      proxy("/source.png", { composite: "watermark", f: "png" }).getSourceMeta(),
+    ).resolves.toMatchObject({ mtime: new Date("2024-01-02T00:00:00Z") });
+    const handler = createImageProxyFetchHandler(proxy);
+    const first = await handler(
+      new Request("http://localhost/composite_watermark,f_png/source.png", {
+        headers: { "if-modified-since": "Mon, 01 Jan 2024 00:00:00 GMT" },
+      }),
+    );
+    expect(first.status).toBe(200);
+    const second = await handler(
+      new Request("http://localhost/composite_watermark,f_png/source.png", {
+        headers: { "if-modified-since": "Tue, 02 Jan 2024 00:00:00 GMT" },
+      }),
+    );
+    expect(second.status).toBe(304);
   });
 });
 

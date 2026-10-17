@@ -68,6 +68,40 @@ describe("napiDriver", () => {
     expect(heightOnly.metadata).toMatchObject({ width: 4, height: 2 });
   });
 
+  it("materializes napi composite before subsequent geometry operations", async () => {
+    const source = await sharp({
+      create: { width: 8, height: 4, channels: 4, background: "blue" },
+    })
+      .png()
+      .toBuffer();
+    const layer: RawImageData = {
+      data: new Uint8Array([255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255]),
+      width: 2,
+      height: 2,
+      layout: "rgba8",
+    };
+    const result = await driver.transform(
+      source,
+      recipe([
+        { type: "composite", layer: "red", position: "center" },
+        { type: "resize", width: 4, height: 2, kernel: "nearest" },
+      ]),
+      { layers: { red: layer } },
+    );
+    if (result.kind !== "encoded") throw new TypeError("Expected encoded output.");
+
+    const { data, info } = await sharp(result.data)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    expect(info.width).toBe(4);
+    expect(info.height).toBe(2);
+    let redPixels = 0;
+    for (let index = 0; index < data.length; index += 4) {
+      if ((data[index] as number) === 255 && (data[index + 2] as number) === 0) redPixels += 1;
+    }
+    expect(redPixels).toBe(1);
+  });
   it("uses one capability source for formats and recipe checks", async () => {
     const capabilities = await driver.capabilities();
     for (const format of Object.keys(capabilities.formats) as Array<
