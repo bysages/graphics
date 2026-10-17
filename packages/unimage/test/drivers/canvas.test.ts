@@ -60,4 +60,24 @@ describe("canvasDriver on Node.js (@napi-rs/canvas backend)", () => {
     const capabilities = await canvasDriver().capabilities();
     expect(capabilities.formats.gif?.encode?.compressionModes).toContain("lossless");
   });
+
+  it("rejects canvas work when the caller has already aborted", async () => {
+    const driver = canvasDriver();
+    const signal = AbortSignal.abort();
+    const raw: import("../../src/types").RawImageData = {
+      data: new Uint8Array(8 * 8 * 4).fill(160),
+      width: 8,
+      height: 8,
+      layout: "rgba8",
+    };
+    await expect(driver.metadata(raw, { signal })).rejects.toMatchObject({
+      code: "UNIMAGE_ABORT",
+    });
+    await expect(
+      driver.transform(raw, { operations: [], output: { format: "png" } }, { signal }),
+    ).rejects.toMatchObject({ code: "UNIMAGE_ABORT" });
+    await expect(driver.decode!(raw, { signal })).rejects.toMatchObject({
+      code: "UNIMAGE_ABORT",
+    });
+  });
 });

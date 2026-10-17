@@ -19,6 +19,7 @@ import type {
   RawImageFrame,
   RawImageSequence,
 } from "../types";
+import { abortable, assertNotAborted } from "../utils/abort";
 import { applyPixelFilter, parseColor } from "../utils/filters";
 import { sniffImageFormat } from "../utils/format";
 
@@ -337,22 +338,17 @@ function sharpCapabilityFormats(
       rasterDensity: options.density ?? false,
       vector: options.vector ?? false,
     },
-    encode: {
-      compressionModes:
-        available?.output?.buffer && (options.requiresHevc !== true || hevcEncoding)
-          ? options.modes
-          : [],
-      quality:
-        available?.output?.buffer === true &&
-        (options.requiresHevc !== true || hevcEncoding) &&
-        options.quality === true,
-      animation:
-        available?.output?.buffer === true &&
-        (options.requiresHevc !== true || hevcEncoding) &&
-        options.animation === true,
-      metadataPolicies: ["strip", "preserve"],
-      sanitize: false,
-    },
+    encode: (() => {
+      const encodeAvailable =
+        available?.output?.buffer === true && (options.requiresHevc !== true || hevcEncoding);
+      return {
+        compressionModes: encodeAvailable ? options.modes : [],
+        quality: encodeAvailable && options.quality === true,
+        animation: encodeAvailable && options.animation === true,
+        metadataPolicies: ["strip", "preserve"],
+        sanitize: false,
+      };
+    })(),
   });
   const heif = formatMap.heif;
   const jxl = formatMap.jxl;
@@ -458,11 +454,11 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
       }
     },
 
-    async metadata(input: ImageInput, _context?: DriverRequestContext): Promise<ImageMetadata> {
+    async metadata(input: ImageInput, context?: DriverRequestContext): Promise<ImageMetadata> {
       const factory = await loadFactory(options);
       const instance = await createSharp(factory, input);
       try {
-        const meta = await instance.metadata();
+        const meta = await abortable(instance.metadata(), context?.signal, "metadata");
         if (meta.width === undefined || meta.height === undefined) {
           throw new UnImageError("The image metadata is incomplete.", {
             code: "UNIMAGE_INVALID_INPUT",
@@ -511,17 +507,17 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
       );
 
       try {
-        const meta = await instance.metadata();
+        const meta = await abortable(instance.metadata(), request.signal, "metadata");
         if (meta.width === undefined || meta.height === undefined) {
           throw new UnImageError("The image metadata is incomplete.", {
             code: "UNIMAGE_INVALID_INPUT",
           });
         }
-        const { data, info } = await instance
-          .ensureAlpha()
-          .toColourspace("srgb")
-          .raw()
-          .toBuffer({ resolveWithObject: true });
+        const { data, info } = await abortable(
+          instance.ensureAlpha().toColourspace("srgb").raw().toBuffer({ resolveWithObject: true }),
+          request.signal,
+          "decode",
+        );
         const format = sharpFormats[meta.format ?? ""];
         return {
           data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
@@ -580,11 +576,11 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
           });
         }
 
-        const { data, info } = await instance
-          .ensureAlpha()
-          .toColourspace("srgb")
-          .raw()
-          .toBuffer({ resolveWithObject: true });
+        const { data, info } = await abortable(
+          instance.ensureAlpha().toColourspace("srgb").raw().toBuffer({ resolveWithObject: true }),
+          request.signal,
+          "frame decode",
+        );
         if (info.height % pages !== 0) {
           throw new UnImageError("The decoder returned an invalid frame strip.", {
             code: "UNIMAGE_DECODE",
@@ -630,12 +626,12 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
     },
 
     async transform(input: ImageInput, recipe, context): Promise<ImageResult> {
-      void context;
+      assertNotAborted(context?.signal, "transform");
       const factory = await loadFactory(options);
       const source = await createSharp(factory, input, {}, options.sharpOptions);
       let sourceMeta;
       try {
-        sourceMeta = await source.metadata();
+        sourceMeta = await abortable(source.metadata(), context?.signal, "metadata");
       } catch (error) {
         throw new UnImageError("The image could not be decoded by sharp.", {
           code: "UNIMAGE_DECODE",
@@ -660,6 +656,7 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
       if (recipe.output.metadataPolicy === "preserve") instance = instance.withMetadata();
 
       for (const operation of recipe.operations) {
+        assertNotAborted(context?.signal, "transform");
         if (nativeOperations.has(operation.type)) {
           instance = applyNativeOperation(instance, operation);
           continue;
@@ -670,11 +667,11 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
             operation: operation.type,
           });
         }
-        const { data, info } = await instance
-          .ensureAlpha()
-          .toColourspace("srgb")
-          .raw()
-          .toBuffer({ resolveWithObject: true });
+        const { data, info } = await abortable(
+          instance.ensureAlpha().toColourspace("srgb").raw().toBuffer({ resolveWithObject: true }),
+          context?.signal,
+          "pixel fallback",
+        );
         const filtered = applyPixelFilter(
           {
             data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
@@ -691,11 +688,17 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
         });
       }
 
-      const encoded = await encoderFor(instance, recipe).toBuffer({
-        resolveWithObject: true,
-      });
+      const encoded = await abortable(
+        encoderFor(instance, recipe).toBuffer({ resolveWithObject: true }),
+        context?.signal,
+        "encode",
+      );
 
-      const meta2 = await (await createSharp(factory, encoded.data)).metadata();
+      const meta2 = await abortable(
+        (await createSharp(factory, encoded.data)).metadata(),
+        context?.signal,
+        "encode metadata",
+      );
       return {
         kind: "encoded",
         data: new Uint8Array(encoded.data),

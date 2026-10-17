@@ -1,3 +1,4 @@
+import sharp from "sharp";
 import { describe, expect, it } from "vite-plus/test";
 
 import { napiDriver } from "../../src/drivers/napi";
@@ -33,6 +34,24 @@ describe("napiDriver", () => {
       height: 1,
       format: "png",
     });
+  });
+
+  it("normalizes non-RGBA source pixels for decode and fallback", async () => {
+    const jpeg = await sharp({
+      create: { width: 2, height: 1, channels: 3, background: { r: 20, g: 60, b: 120 } },
+    })
+      .jpeg()
+      .toBuffer();
+    const decoded = await driver.decode!(new Uint8Array(jpeg), {});
+    expect(decoded.layout).toBe("rgba8");
+    expect(decoded.data).toHaveLength(2 * 1 * 4);
+
+    const result = await driver.transform(new Uint8Array(jpeg), {
+      operations: [{ type: "ensureAlpha" }, { type: "tint", color: "#ff0000" }],
+      output: { format: "png" },
+    });
+    expect(result.format).toBe("png");
+    expect(result.metadata).toMatchObject({ width: 2, height: 1 });
   });
 
   it("encodes and resizes raw pixels", async () => {

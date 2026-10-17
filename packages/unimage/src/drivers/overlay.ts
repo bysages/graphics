@@ -203,32 +203,65 @@ export function overlayDriver(...drivers: ImageDriver[]): ImageDriver {
 
     async metadata(input: ImageInput, context?): Promise<ImageMetadata> {
       const inputFormat = await sniffImageFormat(input);
+      const candidates: ImageDriver[] = [];
       for (const driver of drivers) {
-        const capabilities = await driver.capabilities();
-        if (supportsRead(capabilities, inputFormat)) return driver.metadata(input, context);
+        if (supportsRead(await driver.capabilities(), inputFormat)) candidates.push(driver);
       }
-      throw new UnImageError(
-        inputFormat === undefined
-          ? "No driver in the overlay stack can read this input."
-          : `No driver in the overlay stack can read ${inputFormat}.`,
-        { code: "UNIMAGE_DECODE", format: inputFormat },
-      );
+      if (candidates.length === 0) {
+        throw new UnImageError(
+          inputFormat === undefined
+            ? "No driver in the overlay stack can read this input."
+            : `No driver in the overlay stack can read ${inputFormat}.`,
+          { code: "UNIMAGE_DECODE", format: inputFormat },
+        );
+      }
+
+      let lastError: unknown;
+      for (const driver of candidates) {
+        try {
+          return await driver.metadata(input, context);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (lastError !== undefined) throw lastError;
+      throw new UnImageError("No overlay driver could read this input.", {
+        code: "UNIMAGE_DECODE",
+        format: inputFormat,
+      });
     },
 
     async decode(input: ImageInput, request: ImageDecodeRequest = {}): Promise<RawImageFrame> {
       const inputFormat = await sniffImageFormat(input);
+      const candidates: ImageDriver[] = [];
       for (const driver of drivers) {
         const capabilities = await driver.capabilities();
-        if (!supportsDecode(capabilities, inputFormat)) continue;
-        if (driver.decode === undefined) continue;
-        return await driver.decode(input, request);
+        if (supportsDecode(capabilities, inputFormat) && driver.decode !== undefined) {
+          candidates.push(driver);
+        }
       }
-      throw new UnImageError(
-        inputFormat === undefined
-          ? "No driver in the overlay stack can decode this input to pixels."
-          : `No driver in the overlay stack can decode ${inputFormat} to pixels.`,
-        { code: "UNIMAGE_DECODE", format: inputFormat },
-      );
+      if (candidates.length === 0) {
+        throw new UnImageError(
+          inputFormat === undefined
+            ? "No driver in the overlay stack can decode this input to pixels."
+            : `No driver in the overlay stack can decode ${inputFormat} to pixels.`,
+          { code: "UNIMAGE_DECODE", format: inputFormat },
+        );
+      }
+
+      let lastError: unknown;
+      for (const driver of candidates) {
+        try {
+          return await driver.decode!(input, request);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (lastError !== undefined) throw lastError;
+      throw new UnImageError("No overlay driver could decode this input.", {
+        code: "UNIMAGE_DECODE",
+        format: inputFormat,
+      });
     },
 
     async decodeFrames(
@@ -236,18 +269,35 @@ export function overlayDriver(...drivers: ImageDriver[]): ImageDriver {
       request: ImageDecodeRequest = {},
     ): Promise<RawImageSequence> {
       const inputFormat = await sniffImageFormat(input);
+      const candidates: ImageDriver[] = [];
       for (const driver of drivers) {
         const capabilities = await driver.capabilities();
-        if (!supportsDecodeFrames(capabilities, inputFormat)) continue;
-        if (driver.decodeFrames === undefined) continue;
-        return await driver.decodeFrames(input, request);
+        if (supportsDecodeFrames(capabilities, inputFormat) && driver.decodeFrames !== undefined) {
+          candidates.push(driver);
+        }
       }
-      throw new UnImageError(
-        inputFormat === undefined
-          ? "No driver in the overlay stack can decode this input as frames."
-          : `No driver in the overlay stack can decode ${inputFormat} as frames.`,
-        { code: "UNIMAGE_DECODE", format: inputFormat },
-      );
+      if (candidates.length === 0) {
+        throw new UnImageError(
+          inputFormat === undefined
+            ? "No driver in the overlay stack can decode this input as frames."
+            : `No driver in the overlay stack can decode ${inputFormat} as frames.`,
+          { code: "UNIMAGE_DECODE", format: inputFormat },
+        );
+      }
+
+      let lastError: unknown;
+      for (const driver of candidates) {
+        try {
+          return await driver.decodeFrames!(input, request);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (lastError !== undefined) throw lastError;
+      throw new UnImageError("No overlay driver could decode this input as frames.", {
+        code: "UNIMAGE_DECODE",
+        format: inputFormat,
+      });
     },
 
     async transform(input: ImageInput, recipe, context?): Promise<ImageResult> {

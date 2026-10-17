@@ -44,6 +44,13 @@ function fakeRasterDriver(): ImageDriver {
       },
     }),
     metadata: async () => ({ width: 2, height: 1, format: "png" }),
+    decode: async () => ({
+      data: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]),
+      width: 2,
+      height: 1,
+      layout: "rgba8",
+      metadata: { width: 2, height: 1 },
+    }),
     transform: async (_input, recipe) => ({
       kind: "encoded",
       data: new Uint8Array([1]),
@@ -78,6 +85,51 @@ describe("overlayDriver", () => {
       output: { format: "svg" },
     });
     expect(vector.kind).toBe("vector");
+  });
+
+  it("falls through when a capability-matched metadata or decode driver fails", async () => {
+    const capabilities: ImageCapabilities = {
+      driver: "failing",
+      formats: {
+        png: {
+          decode: {
+            pixelFormats: ["rgba8"],
+            frames: ["still"],
+            orientation: false,
+            rasterDensity: false,
+            vector: false,
+          },
+          encode: {
+            compressionModes: ["lossless"],
+            quality: false,
+            animation: false,
+            metadataPolicies: ["strip"],
+            sanitize: false,
+          },
+        },
+      },
+      metadataRead: true,
+      operations: {},
+    };
+    const failing: ImageDriver = {
+      name: "failing",
+      capabilities: async () => capabilities,
+      checkRecipe: async () => ({ supported: true, driver: "failing", missing: [], capabilities }),
+      metadata: async () => {
+        throw new Error("metadata failed");
+      },
+      decode: async () => {
+        throw new Error("decode failed");
+      },
+      transform: async () => {
+        throw new Error("transform failed");
+      },
+    };
+    const overlay = overlayDriver(failing, fakeRasterDriver());
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+    await expect(overlay.metadata(png)).resolves.toMatchObject({ format: "png" });
+    await expect(overlay.decode!(png, {})).resolves.toMatchObject({ width: 2, height: 1 });
   });
 
   it("rejects an impossible input/output route before calling a driver", async () => {

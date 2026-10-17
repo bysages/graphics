@@ -8,6 +8,7 @@ import { createImageManager } from "./manager";
 import type { ProxyStorage } from "./storage/types";
 import { normalizeStorage, type StorageInput } from "./storage/unstorage";
 import type { FitMode, ImageFormat, ImageMetadata, ImageOperation, ImageManager } from "./types";
+import { normalizeMaxAge } from "./utils/cache";
 
 export type ImageProxySourceMeta = {
   mtime?: Date;
@@ -209,13 +210,6 @@ function invalidModifier(name: string, reason: string): HTTPError {
     statusText: "UNIMAGE_INVALID_MODIFIER",
     message: `The "${name}" modifier ${reason}.`,
   });
-}
-
-export function normalizeMaxAge(value: unknown): number | undefined {
-  const parsed = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
-  return typeof parsed === "number" && Number.isFinite(parsed) && parsed >= 0
-    ? Math.min(Math.floor(parsed), 2 ** 31)
-    : undefined;
 }
 
 function normalizeFit(value: ImageProxyFitModifier): FitMode {

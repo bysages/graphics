@@ -13,6 +13,7 @@ import type {
   RawImageFrame,
   RawImageData,
 } from "../types";
+import { abortable, assertNotAborted } from "../utils/abort";
 import { applyPixelFilter, parseColor, type RgbaImage } from "../utils/filters";
 import { sniffImageFormat } from "../utils/format";
 
@@ -95,7 +96,7 @@ function toBlob(input: Exclude<ImageInput, RawImageData>): Blob {
 }
 
 let nodeCanvas: NodeCanvasModule | undefined;
-let nodeCanvasPromise: Promise<NodeCanvasModule | undefined> | undefined;
+let nodeCanvasModuleCache: Promise<NodeCanvasModule | undefined> | undefined;
 
 function browserAvailable(): boolean {
   return typeof OffscreenCanvas === "function" || typeof document !== "undefined";
@@ -107,7 +108,7 @@ function browserAvailable(): boolean {
  */
 async function resolveNodeCanvas(): Promise<NodeCanvasModule | undefined> {
   if (browserAvailable()) return undefined;
-  nodeCanvasPromise ??= import("@napi-rs/canvas")
+  nodeCanvasModuleCache ??= import("@napi-rs/canvas")
     .then((module_) => {
       const candidate = module_ as unknown as NodeCanvasModule & { default?: NodeCanvasModule };
       return candidate.createCanvas !== undefined
@@ -115,7 +116,7 @@ async function resolveNodeCanvas(): Promise<NodeCanvasModule | undefined> {
         : (candidate.default as NodeCanvasModule);
     })
     .catch(() => undefined);
-  nodeCanvas = await nodeCanvasPromise;
+  nodeCanvas = await nodeCanvasModuleCache;
   return nodeCanvas;
 }
 
@@ -161,6 +162,7 @@ async function decodeSurface(
   autoOrient: boolean,
   signal?: AbortSignal,
 ): Promise<Surface> {
+  assertNotAborted(signal, "decode");
   if (isRawImage(input)) {
     if (input.layout !== "rgba8") {
       throw new UnImageError("Only rgba8 raw images are supported.", {
@@ -186,7 +188,7 @@ async function decodeSurface(
     try {
       const bytes =
         input instanceof Blob ? new Uint8Array(await input.arrayBuffer()) : (input as Uint8Array);
-      const image = await nodeCanvas.loadImage(bytes);
+      const image = await abortable(nodeCanvas.loadImage(bytes), signal, "decode");
       const surface = nodeCanvas.createCanvas(image.width, image.height);
       surfaceContext(surface).drawImage(image as unknown as Surface, 0, 0);
       return surface;
@@ -771,42 +773,19 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
         formats,
         metadataRead: true,
         operations: {
+          ...(Object.fromEntries(
+            canvasOperationNames.map((operation) => [operation, { supported: true }]),
+          ) as ImageCapabilities["operations"]),
           autoOrient: {
             supported: nodeCanvas === undefined,
             ...(nodeCanvas === undefined
               ? {}
               : { notes: ["Canvas image decoding does not apply EXIF orientation."] }),
           },
-          resize: { supported: true },
-          crop: { supported: true },
-          rotate: { supported: true },
-          flip: { supported: true },
-          grayscale: { supported: true },
-          invert: { supported: true },
           blur: {
             supported: true,
             notes: ["Uses Canvas2D filter support; results may vary slightly between browsers."],
           },
-          trim: { supported: true },
-          extend: { supported: true },
-          sharpen: { supported: true },
-          median: { supported: true },
-          dilate: { supported: true },
-          erode: { supported: true },
-          clahe: { supported: true },
-          flatten: { supported: true },
-          unflatten: { supported: true },
-          gamma: { supported: true },
-          normalize: { supported: true },
-          threshold: { supported: true },
-          linear: { supported: true },
-          modulate: { supported: true },
-          opacity: { supported: true },
-          tint: { supported: true },
-          contrast: { supported: true },
-          convolve: { supported: true },
-          removeAlpha: { supported: true },
-          ensureAlpha: { supported: true },
         },
         notes: [
           "Canvas encoders strip incidental metadata.",
@@ -827,6 +806,7 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
     },
 
     async metadata(input: ImageInput, context): Promise<ImageMetadata> {
+      assertNotAborted(context?.signal, "metadata");
       if (isRawImage(input)) {
         return {
           width: input.width,
@@ -859,7 +839,7 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
 
       try {
         const blob = toBlob(input);
-        const bitmap = await createImageBitmap(blob);
+        const bitmap = await abortable(createImageBitmap(blob), context?.signal, "metadata");
         const metadata: ImageMetadata = {
           width: bitmap.width,
           height: bitmap.height,
@@ -890,6 +870,7 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
     },
 
     async decode(input: ImageInput, request: ImageDecodeRequest): Promise<RawImageFrame> {
+      assertNotAborted(request.signal, "decode");
       if (request.rasterDensity !== undefined) {
         throw new UnImageError("The canvas driver does not support raster density.", {
           code: "UNIMAGE_UNSUPPORTED_OPERATION",
@@ -927,6 +908,7 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
     },
 
     async transform(input, recipe, context): Promise<ImageResult> {
+      assertNotAborted(context?.signal, "transform");
       nodeCanvas ??= await resolveNodeCanvas();
       if (recipe.input?.frames === "all" || recipe.input?.rasterDensity !== undefined) {
         throw new UnImageError("The canvas driver does not support this input option.", {
@@ -948,14 +930,19 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
       );
 
       for (const operation of recipe.operations) {
+        assertNotAborted(context?.signal, "transform");
         surface = applyOperation(surface, operation);
       }
 
       try {
-        const blob = await surfaceToBlob(
-          surface,
-          recipe.output.format,
-          "quality" in recipe.output ? recipe.output.quality : undefined,
+        const blob = await abortable(
+          surfaceToBlob(
+            surface,
+            recipe.output.format,
+            "quality" in recipe.output ? recipe.output.quality : undefined,
+          ),
+          context?.signal,
+          "encode",
         );
         const mediaType = mediaTypes[recipe.output.format] as string;
         const data = new Uint8Array(await blob.arrayBuffer());

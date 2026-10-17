@@ -1,7 +1,9 @@
 import { HTTPError } from "h3";
 import { defineDriver, type Driver } from "unstorage";
 
-import { normalizeMaxAge } from "../proxy";
+import { UnImageError } from "../errors";
+import { normalizeMaxAge } from "../utils/cache";
+import type { ProxyStorageOptions } from "./types";
 
 export interface HTTPStorageOptions {
   fetchOptions?: RequestInit;
@@ -215,7 +217,113 @@ export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => 
     }
   }
 
-  async function fetchURL(key: string, init?: RequestInit): Promise<Response> {
+  async function pinnedRequest(
+    url: URL,
+    init?: RequestInit,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const [{ request: httpRequest }, { request: httpsRequest }, { lookup }, { isIP }] =
+      await Promise.all([
+        import("node:http") as Promise<typeof import("node:http")>,
+        import("node:https") as Promise<typeof import("node:https")>,
+        import("node:dns/promises") as Promise<DnsModule>,
+        import("node:net") as Promise<NetModule>,
+      ]);
+
+    let addresses: readonly { address: string; family: number }[];
+    if (isIP(url.hostname) !== 0) {
+      addresses = [{ address: url.hostname, family: isIP(url.hostname) as 4 | 6 }];
+    } else {
+      addresses = await lookup(url.hostname, { all: true, verbatim: true });
+    }
+    const pinnedLookup: NonNullable<import("node:http").RequestOptions["lookup"]> = (
+      _hostname,
+      requestFamily,
+      callback,
+    ) => {
+      const wanted = typeof requestFamily === "number" ? requestFamily : 0;
+      const address =
+        wanted === 0
+          ? addresses[0]
+          : (addresses.find((item) => item.family === wanted) ?? addresses[0]);
+      if (address === undefined) {
+        callback(new Error(`No pinned address for ${url.hostname}`), "", 4);
+        return;
+      }
+      callback(null, address.address, address.family);
+    };
+
+    const incomingHeaders = new Headers(init?.headers);
+    const configuredHeaders = new Headers(options.fetchOptions?.headers);
+    const headers = new Headers();
+    for (const [name, value] of incomingHeaders) headers.set(name, value);
+    for (const [name, value] of configuredHeaders) headers.set(name, value);
+
+    const requester = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const request = requester({
+      hostname: url.hostname,
+      port: url.port === "" ? undefined : Number(url.port),
+      path: `${url.pathname}${url.search}`,
+      method: init?.method ?? "GET",
+      headers: Object.fromEntries(headers),
+      lookup: pinnedLookup,
+      ...(url.protocol === "https:" ? { serverName: url.hostname } : {}),
+      ...(signal === undefined ? {} : { signal }),
+    });
+
+    return await new Promise<Response>((resolve, reject) => {
+      request.on("error", () => {});
+      const abort = () => {
+        request.destroy();
+        reject(new DOMException("The request was aborted.", "AbortError"));
+      };
+      if (signal?.aborted) {
+        abort();
+        return;
+      }
+      signal?.addEventListener("abort", abort, { once: true });
+      request.on("error", (error) => {
+        signal?.removeEventListener("abort", abort);
+        reject(error);
+      });
+      request.on("response", (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () => {
+          signal?.removeEventListener("abort", abort);
+          const body = Buffer.concat(chunks);
+          const responseHeaders = new Headers();
+          for (const [name, value] of Object.entries(response.headers)) {
+            if (Array.isArray(value)) {
+              for (const item of value) responseHeaders.append(name, item);
+            } else if (value !== undefined) {
+              responseHeaders.set(name, value);
+            }
+          }
+          resolve(
+            new Response(
+              url.protocol === "http:" || response.statusCode === 204 ? undefined : body,
+              {
+                status: response.statusCode ?? 502,
+                statusText: response.statusMessage ?? "",
+                headers: responseHeaders,
+              },
+            ),
+          );
+        });
+        response.on("error", (error) => {
+          signal?.removeEventListener("abort", abort);
+          reject(error);
+        });
+      });
+    });
+  }
+
+  async function fetchURL(
+    key: string,
+    init?: RequestInit,
+    signal?: AbortSignal,
+  ): Promise<Response> {
     if (options.fetchOptions?.redirect === "follow") {
       throw new HTTPError({
         status: 500,
@@ -242,11 +350,7 @@ export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => 
 
     const manualRedirects = options.fetchOptions?.redirect === undefined;
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
-      const response = await fetch(url, {
-        ...options.fetchOptions,
-        ...init,
-        redirect: options.fetchOptions?.redirect ?? "manual",
-      });
+      const response = await pinnedRequest(url, init, signal);
       if (!manualRedirects || !redirectStatuses.has(response.status)) {
         return response;
       }
@@ -266,12 +370,12 @@ export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => 
 
   return {
     name: "proxy-http",
-    async hasItem(key) {
-      const response = await fetchURL(key, { method: "HEAD" });
+    async hasItem(key, request?: ProxyStorageOptions) {
+      const response = await fetchURL(key, { method: "HEAD" }, request?.signal);
       return response.ok;
     },
-    async getItem(key) {
-      const response = await fetchURL(key);
+    async getItem(key, request?: ProxyStorageOptions) {
+      const response = await fetchURL(key, undefined, request?.signal);
       if (!response.ok) {
         throw new HTTPError({
           status: response.status,
@@ -281,8 +385,8 @@ export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => 
       }
       return response.text();
     },
-    async getItemRaw(key) {
-      const response = await fetchURL(key);
+    async getItemRaw(key, request?: ProxyStorageOptions) {
+      const response = await fetchURL(key, undefined, request?.signal);
       if (!response.ok) {
         throw new HTTPError({
           status: response.status,
@@ -295,9 +399,9 @@ export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => 
     async getKeys() {
       return [];
     },
-    async getMeta(key) {
+    async getMeta(key, request?: ProxyStorageOptions) {
       try {
-        const response = await fetchURL(key, { method: "HEAD" });
+        const response = await fetchURL(key, { method: "HEAD" }, request?.signal);
         if (!response.ok) return {};
         const cacheControl = response.headers.get("cache-control");
         const lastModified = response.headers.get("last-modified");
@@ -310,7 +414,13 @@ export const httpDriver = defineDriver((options: HTTPStorageOptions): Driver => 
           ...(mtime === undefined || Number.isNaN(mtime.getTime()) ? {} : { mtime }),
           maxAge: resolvedMaxAge,
         };
-      } catch {
+      } catch (error) {
+        if (request?.signal?.aborted) {
+          throw new UnImageError("Image source lookup was aborted.", {
+            code: "UNIMAGE_ABORT",
+            cause: error,
+          });
+        }
         return {};
       }
     },
