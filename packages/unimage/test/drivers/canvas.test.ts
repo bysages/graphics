@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { canvasDriver } from "../src/drivers/canvas";
-import type { ImageRecipe } from "../src/types";
+import { canvasDriver } from "../../src/drivers/canvas";
+import type { ImageRecipe } from "../../src/types";
 
 async function redPng(width = 8, height = 6): Promise<Uint8Array> {
   const { createCanvas } = await import("@napi-rs/canvas");

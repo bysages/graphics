@@ -1,4 +1,4 @@
-import { hslToRgb, rgbToHsl } from "unpalette";
+import { hslToRgb, parseRgba, rgbToHsl } from "unpalette";
 
 export interface RgbaImage {
   data: Uint8Array;
@@ -11,45 +11,9 @@ type Rgba = readonly [number, number, number, number];
 const clamp255 = (value: number): number => Math.max(0, Math.min(255, Math.round(value)));
 
 export function parseColor(value: string | undefined): Rgba {
-  if (value === undefined || value === "" || value === "transparent") return [0, 0, 0, 0];
-  const text = value.trim().toLowerCase();
-  if (text === "black") return [0, 0, 0, 255];
-  if (text === "white") return [255, 255, 255, 255];
-  if (text === "red") return [255, 0, 0, 255];
-  if (text === "green") return [0, 128, 0, 255];
-  if (text === "blue") return [0, 0, 255, 255];
-
-  const hex = text.match(/^#([0-9a-f]{3,8})$/);
-  if (hex?.[1]) {
-    const digits = hex[1];
-    const part = (start: number, length: number) =>
-      Number.parseInt(digits.slice(start, start + length).repeat(length === 1 ? 2 : 1), 16);
-    if (digits.length === 3 || digits.length === 4) {
-      return [part(0, 1), part(1, 1), part(2, 1), digits.length === 4 ? part(3, 1) : 255];
-    }
-    if (digits.length === 6 || digits.length === 8) {
-      return [part(0, 2), part(2, 2), part(4, 2), digits.length === 8 ? part(6, 2) : 255];
-    }
-  }
-
-  const rgb = text.match(/^rgba?\(([^)]+)\)$/);
-  if (rgb?.[1]) {
-    const parts = rgb[1].split(/[\s,/]+/).filter(Boolean);
-    const red = channelValue(parts[0]);
-    const green = channelValue(parts[1]);
-    const blue = channelValue(parts[2]);
-    const alpha = parts[3] === undefined ? 1 : Math.max(0, Math.min(1, Number(parts[3])));
-    if ([red, green, blue].every(Number.isFinite) && Number.isFinite(alpha)) {
-      return [red, green, blue, Math.round(alpha * 255)];
-    }
-  }
-
-  throw new Error(`Unsupported CSS color: ${value}`);
-}
-
-function channelValue(value: string | undefined): number {
-  const text = value ?? "";
-  return text.endsWith("%") ? (Number(text.slice(0, -1)) * 255) / 100 : Number(text);
+  if (value === undefined || value === "") return [0, 0, 0, 0];
+  const rgba = parseRgba(value);
+  return [rgba.r, rgba.g, rgba.b, Math.round(rgba.a * 255)];
 }
 
 function createImage(width: number, height: number, background: Rgba = [0, 0, 0, 0]): RgbaImage {
@@ -317,13 +281,8 @@ export function applyPixelFilter(
   switch (operation.type) {
     case "trim": {
       const threshold = operation.threshold ?? 10;
-      const [backgroundRed, backgroundGreen, backgroundBlue, backgroundAlpha] =
-        parseColor("#00000000");
-      void backgroundRed;
-      void backgroundGreen;
-      void backgroundBlue;
-      void backgroundAlpha;
       const reference = channels(image.data, 0);
+      const referenceAlpha = image.data[3] ?? 0;
       let top = 0;
       let bottom = image.height - 1;
       let left = 0;
@@ -333,7 +292,7 @@ export function applyPixelFilter(
           Math.abs((image.data[index] as number) - reference[0]) > threshold ||
           Math.abs((image.data[index + 1] as number) - reference[1]) > threshold ||
           Math.abs((image.data[index + 2] as number) - reference[2]) > threshold ||
-          Math.abs((image.data[index + 3] as number) - 255) > threshold
+          Math.abs((image.data[index + 3] as number) - referenceAlpha) > threshold
         );
       };
       while (
@@ -387,12 +346,15 @@ export function applyPixelFilter(
       if (mode === "copy") {
         for (let y = 0; y < outputHeight; y += 1) {
           const sourceY = Math.max(0, Math.min(image.height - 1, y - operation.top));
-          if (y - operation.top === sourceY) continue;
-          const sourceRow = pixelIndex(image, 0, sourceY);
-          output.data.set(
-            image.data.subarray(sourceRow, sourceRow + image.width * 4),
-            pixelIndex(output, operation.left, y),
-          );
+          for (let x = 0; x < outputWidth; x += 1) {
+            const sourceX = Math.max(0, Math.min(image.width - 1, x - operation.left));
+            const source = pixelIndex(image, sourceX, sourceY);
+            const target = pixelIndex(output, x, y);
+            output.data[target] = image.data[source] as number;
+            output.data[target + 1] = image.data[source + 1] as number;
+            output.data[target + 2] = image.data[source + 2] as number;
+            output.data[target + 3] = image.data[source + 3] as number;
+          }
         }
       } else if (mode === "repeat" || mode === "mirror") {
         for (let y = 0; y < outputHeight; y += 1) {
@@ -599,7 +561,9 @@ export function applyPixelFilter(
           const mirroredY = y < 0 ? -y - 1 : y >= image.height ? image.height * 2 - y - 1 : y;
           return image.data[(mirroredY * image.width + mirroredX) * 4 + channel] ?? 0;
         }
-        return 0;
+        const clampedX = Math.max(0, Math.min(image.width - 1, x));
+        const clampedY = Math.max(0, Math.min(image.height - 1, y));
+        return image.data[(clampedY * image.width + clampedX) * 4 + channel] ?? 0;
       };
       for (let y = 0; y < image.height; y += 1) {
         for (let x = 0; x < image.width; x += 1) {

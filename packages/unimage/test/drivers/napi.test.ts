@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { napiDriver } from "../src/drivers/napi";
-import type { ImageRecipe, RawImageData } from "../src/types";
+import { napiDriver } from "../../src/drivers/napi";
+import type { ImageRecipe, RawImageData } from "../../src/types";
 
 const raw: RawImageData = {
   data: new Uint8Array([255, 0, 0, 255, 0, 255, 0, 255]),
@@ -47,6 +47,22 @@ describe("napiDriver", () => {
 
     const heightOnly = await driver.transform(raw, recipe([{ type: "resize", height: 2 }]));
     expect(heightOnly.metadata).toMatchObject({ width: 4, height: 2 });
+  });
+
+  it("uses one capability source for formats and recipe checks", async () => {
+    const capabilities = await driver.capabilities();
+    for (const format of Object.keys(capabilities.formats) as Array<
+      keyof typeof capabilities.formats
+    >) {
+      if (format === "svg") continue;
+      await expect(
+        driver.checkRecipe({
+          input: { frames: "first" },
+          operations: [],
+          output: { format },
+        }),
+      ).resolves.toMatchObject({ supported: true });
+    }
   });
 
   it("applies a pixel operation without changing dimensions", async () => {

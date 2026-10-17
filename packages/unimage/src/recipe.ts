@@ -14,6 +14,7 @@ import type {
   ImageRecipe,
   OperationCapability,
 } from "./types";
+import { parseColor } from "./utils/filters";
 
 const imageFormats: readonly ImageFormat[] = [
   "png",
@@ -25,8 +26,13 @@ const imageFormats: readonly ImageFormat[] = [
   "tiff",
   "heif",
   "heic",
+  "bmp",
+  "ico",
+  "jxl",
+  "pnm",
+  "tga",
 ];
-const fitModes: readonly FitMode[] = ["contain", "cover", "fill"];
+const fitModes: readonly FitMode[] = ["contain", "cover", "fill", "outside"];
 const operationTypes: readonly ImageOperationType[] = [
   "autoOrient",
   "resize",
@@ -88,10 +94,110 @@ function parseNonNegativeNumber(value: unknown, field: string): number {
   return value;
 }
 
+function parsePositiveNumber(value: unknown, field: string): number {
+  const parsed = parseNonNegativeNumber(value, field);
+  if (parsed === 0) {
+    throw new UnImageError(`${field} must be greater than zero.`, {
+      code: "UNIMAGE_INVALID_RECIPE",
+    });
+  }
+  return parsed;
+}
+
+function parseFiniteNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new UnImageError(`${field} must be a finite number.`, {
+      code: "UNIMAGE_INVALID_RECIPE",
+    });
+  }
+  return value;
+}
+
+function parseIntegerRange(
+  value: unknown,
+  field: string,
+  minimum: number,
+  maximum: number,
+): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new UnImageError(`${field} must be an integer from ${minimum} to ${maximum}.`, {
+      code: "UNIMAGE_INVALID_RECIPE",
+    });
+  }
+  return value;
+}
+
+function parseEnum<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    throw new UnImageError(`${field} is invalid.`, {
+      code: "UNIMAGE_INVALID_RECIPE",
+    });
+  }
+  return value as T;
+}
+
+function parseRecipeColor(value: unknown, field: string): string {
+  if (typeof value !== "string") {
+    throw new UnImageError(`${field} must be a CSS color string.`, {
+      code: "UNIMAGE_INVALID_RECIPE",
+    });
+  }
+  try {
+    parseColor(value);
+  } catch (error) {
+    throw new UnImageError(`${field} is not a supported CSS color.`, {
+      code: "UNIMAGE_INVALID_RECIPE",
+      cause: error,
+    });
+  }
+  return value;
+}
+
+const operationKeys: Record<ImageOperationType, readonly string[]> = {
+  autoOrient: ["type"],
+  resize: [
+    "type",
+    "width",
+    "height",
+    "fit",
+    "background",
+    "withoutEnlargement",
+    "kernel",
+    "position",
+  ],
+  crop: ["type", "x", "y", "width", "height"],
+  rotate: ["type", "angle", "background"],
+  flip: ["type", "axis"],
+  grayscale: ["type"],
+  invert: ["type"],
+  blur: ["type", "sigma"],
+  trim: ["type", "threshold"],
+  extend: ["type", "top", "right", "bottom", "left", "background", "extendWith"],
+  sharpen: ["type", "sigma", "flat", "jagged"],
+  median: ["type", "size"],
+  dilate: ["type", "size"],
+  erode: ["type", "size"],
+  clahe: ["type", "width", "height", "maxSlope"],
+  flatten: ["type", "background"],
+  unflatten: ["type"],
+  gamma: ["type", "gamma", "gammaOut"],
+  normalize: ["type", "lower", "upper"],
+  threshold: ["type", "value", "grayscale"],
+  linear: ["type", "a", "b"],
+  modulate: ["type", "brightness", "saturation", "hue", "lightness"],
+  opacity: ["type", "factor"],
+  tint: ["type", "color"],
+  contrast: ["type", "amount"],
+  convolve: ["type", "kernel", "width", "height", "scale", "offset", "border"],
+  removeAlpha: ["type"],
+  ensureAlpha: ["type", "alpha"],
+};
+
 function parseOperation(value: unknown): ImageOperation {
   if (!isRecord(value) || !isOperationType(value.type)) {
     throw new UnImageError("Unknown image operation.", { code: "UNIMAGE_INVALID_RECIPE" });
   }
+  assertUnknownKeys(value, operationKeys[value.type], value.type);
 
   switch (value.type) {
     case "autoOrient":
@@ -118,31 +224,34 @@ function parseOperation(value: unknown): ImageOperation {
       if (value.withoutEnlargement !== undefined) {
         operation.withoutEnlargement = value.withoutEnlargement === true;
       }
-      const kernels: readonly ResizeKernel[] = [
-        "nearest",
-        "linear",
-        "cubic",
-        "mitchell",
-        "lanczos2",
-        "lanczos3",
-      ];
-      const positions: readonly ImagePosition[] = [
-        "top",
-        "right top",
-        "right",
-        "right bottom",
-        "bottom",
-        "left bottom",
-        "left",
-        "left top",
-        "center",
-        "entropy",
-        "attention",
-      ];
-      if (typeof value.kernel === "string" && kernels.includes(value.kernel as ResizeKernel))
-        operation.kernel = value.kernel as ResizeKernel;
-      if (typeof value.position === "string" && positions.includes(value.position as ImagePosition))
-        operation.position = value.position as ImagePosition;
+      if (value.kernel !== undefined) {
+        operation.kernel = parseEnum<ResizeKernel>(
+          value.kernel,
+          ["nearest", "linear", "cubic", "mitchell", "lanczos2", "lanczos3"],
+          "resize.kernel",
+        );
+      }
+      if (value.position !== undefined) {
+        operation.position = parseEnum<ImagePosition>(
+          value.position,
+          [
+            "top",
+            "right top",
+            "right",
+            "right bottom",
+            "bottom",
+            "left bottom",
+            "left",
+            "left top",
+            "center",
+            "entropy",
+            "attention",
+          ],
+          "resize.position",
+        );
+      }
+      if (value.background !== undefined)
+        operation.background = parseRecipeColor(value.background, "resize.background");
       if (operation.width === undefined && operation.height === undefined) {
         throw new UnImageError("resize requires width, height, or both.", {
           code: "UNIMAGE_INVALID_RECIPE",
@@ -170,7 +279,8 @@ function parseOperation(value: unknown): ImageOperation {
         type: "rotate",
         angle: value.angle,
       };
-      if (typeof value.background === "string") operation.background = value.background;
+      if (value.background !== undefined)
+        operation.background = parseRecipeColor(value.background, "rotate.background");
       return operation;
     }
     case "flip":
@@ -196,10 +306,15 @@ function parseOperation(value: unknown): ImageOperation {
         bottom: parseNonNegativeNumber(value.bottom, "extend.bottom"),
         left: parseNonNegativeNumber(value.left, "extend.left"),
       };
-      if (typeof value.background === "string") operation.background = value.background;
-      const extendModes: readonly string[] = ["background", "copy", "repeat", "mirror"];
-      if (typeof value.extendWith === "string" && extendModes.includes(value.extendWith))
-        operation.extendWith = value.extendWith as import("./types").ExtendMode;
+      if (value.background !== undefined)
+        operation.background = parseRecipeColor(value.background, "extend.background");
+      if (value.extendWith !== undefined) {
+        operation.extendWith = parseEnum(
+          value.extendWith,
+          ["background", "copy", "repeat", "mirror"],
+          "extend.extendWith",
+        ) as import("./types").ExtendMode;
+      }
       return operation;
     }
     case "sharpen": {
@@ -229,7 +344,8 @@ function parseOperation(value: unknown): ImageOperation {
     }
     case "flatten": {
       const operation: Extract<ImageOperation, { type: "flatten" }> = { type: "flatten" };
-      if (typeof value.background === "string") operation.background = value.background;
+      if (value.background !== undefined)
+        operation.background = parseRecipeColor(value.background, "flatten.background");
       return operation;
     }
     case "unflatten":
@@ -237,7 +353,7 @@ function parseOperation(value: unknown): ImageOperation {
     case "gamma": {
       const operation: Extract<ImageOperation, { type: "gamma" }> = {
         type: "gamma",
-        gamma: parseNonNegativeNumber(value.gamma, "gamma"),
+        gamma: parsePositiveNumber(value.gamma, "gamma"),
       };
       if (value.gammaOut !== undefined)
         operation.gammaOut = parseNonNegativeNumber(value.gammaOut, "gamma.gammaOut");
@@ -254,15 +370,15 @@ function parseOperation(value: unknown): ImageOperation {
     case "threshold": {
       const operation: Extract<ImageOperation, { type: "threshold" }> = {
         type: "threshold",
-        value: parseNonNegativeNumber(value.value, "threshold.value"),
+        value: parseIntegerRange(value.value, "threshold.value", 0, 255),
       };
       if (value.grayscale !== undefined) operation.grayscale = value.grayscale === true;
       return operation;
     }
     case "linear": {
       const operation: Extract<ImageOperation, { type: "linear" }> = { type: "linear" };
-      if (value.a !== undefined) operation.a = Number(value.a);
-      if (value.b !== undefined) operation.b = Number(value.b);
+      if (value.a !== undefined) operation.a = parseFiniteNumber(value.a, "linear.a");
+      if (value.b !== undefined) operation.b = parseFiniteNumber(value.b, "linear.b");
       return operation;
     }
     case "modulate": {
@@ -324,8 +440,11 @@ function parseOperation(value: unknown): ImageOperation {
       };
       if (value.scale !== undefined)
         operation.scale = parseNonNegativeNumber(value.scale, "convolve.scale");
-      if (value.offset !== undefined) operation.offset = Number(value.offset);
-      if (value.border === "copy" || value.border === "mirror") operation.border = value.border;
+      if (value.offset !== undefined)
+        operation.offset = parseFiniteNumber(value.offset, "convolve.offset");
+      if (value.border !== undefined) {
+        operation.border = parseEnum(value.border, ["copy", "mirror"], "convolve.border");
+      }
       return operation;
     }
     case "removeAlpha":
@@ -345,13 +464,7 @@ function parseOperation(value: unknown): ImageOperation {
       return operation;
     }
     case "tint":
-      if (typeof value.color !== "string") {
-        throw new UnImageError("tint.color must be a CSS color string.", {
-          code: "UNIMAGE_INVALID_RECIPE",
-          operation: "tint",
-        });
-      }
-      return { type: "tint", color: value.color };
+      return { type: "tint", color: parseRecipeColor(value.color, "tint.color") };
     case "blur":
       return { type: "blur", sigma: parseNonNegativeNumber(value.sigma, "blur.sigma") };
   }
@@ -454,10 +567,7 @@ export function parseImageRecipe(value: unknown): ImageRecipe {
     operations: value.operations.map(parseOperation),
     output: {
       format,
-      metadataPolicy:
-        value.output.metadata === "preserve" || value.output.metadataPolicy === "preserve"
-          ? "preserve"
-          : "strip",
+      metadataPolicy: value.output.metadataPolicy === "preserve" ? "preserve" : "strip",
       ...(hasProperty(value.output, "quality") ? { quality: value.output.quality } : {}),
       ...(hasProperty(value.output, "lossless") ? { lossless: value.output.lossless } : {}),
     } as ImageRecipe["output"],
@@ -477,8 +587,7 @@ function canonicalize(value: unknown): unknown {
 }
 
 export function serializeRecipe(recipe: ImageRecipe): string {
-  parseImageRecipe(recipe);
-  return JSON.stringify(canonicalize(recipe));
+  return JSON.stringify(canonicalize(parseImageRecipe(recipe)));
 }
 
 export async function digestRecipe(recipe: ImageRecipe): Promise<string> {

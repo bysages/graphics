@@ -24,6 +24,15 @@ export interface FSStorageOptions {
  * Read-only filesystem storage built on the unstorage fs driver, with an
  * additional symlink-escape guard the stock driver does not provide.
  */
+let fsPromises: typeof import("node:fs/promises") | undefined;
+let fsPromisesPromise: Promise<typeof import("node:fs/promises") | undefined> | undefined;
+
+async function loadFsPromises(): Promise<typeof import("node:fs/promises") | undefined> {
+  fsPromisesPromise ??= import("node:fs/promises").catch(() => undefined);
+  fsPromises = await fsPromisesPromise;
+  return fsPromises;
+}
+
 export const fsDriver = defineDriver((options: FSStorageOptions): Driver => {
   const bases = (Array.isArray(options.dir) ? options.dir : [options.dir]).map((dir) =>
     resolve(dir),
@@ -33,10 +42,8 @@ export const fsDriver = defineDriver((options: FSStorageOptions): Driver => {
 
   async function assertInsideBase(base: string, key: string): Promise<void> {
     if (options.allowSymlinksOutsideDir === true) return;
-    const fs = globalThis.process?.getBuiltinModule?.("node:fs/promises") as
-      | typeof import("node:fs/promises")
-      | undefined;
-    if (!fs) return;
+    const fs = await loadFsPromises();
+    if (fs === undefined) return;
     const [realKey, realBase] = await Promise.all([
       fs.realpath(join(base, key)).catch(() => undefined),
       fs.realpath(base).catch(() => base),

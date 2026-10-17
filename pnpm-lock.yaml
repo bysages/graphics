@@ -32,6 +32,9 @@ importers:
       unpalette:
         specifier: workspace:*
         version: link:../unpalette
+      unstorage:
+        specifier: 1.17.5
+        version: 1.17.5
     devDependencies:
       '@napi-rs/canvas':
         specifier: 1.0.11
@@ -45,9 +48,6 @@ importers:
       svgo:
         specifier: 4.1.0
         version: 4.1.0
-      unstorage:
-        specifier: 1.17.5
-        version: 1.17.5
 
   packages/unpalette: {}
 

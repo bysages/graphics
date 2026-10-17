@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { sharpDriver } from "../src/drivers/sharp";
-import type { ImageFormat, ImageRecipe, RawImageData } from "../src/types";
+import { sharpDriver } from "../../src/drivers/sharp";
+import type { ImageFormat, ImageRecipe, RawImageData } from "../../src/types";
 
 const driver = sharpDriver();
 
@@ -19,7 +19,7 @@ function recipe(
 
 async function animatedGif(): Promise<Uint8Array> {
   const { readFile } = await import("node:fs/promises");
-  return new Uint8Array(await readFile(new URL("./fixtures/animated.gif", import.meta.url)));
+  return new Uint8Array(await readFile(new URL("../fixtures/animated.gif", import.meta.url)));
 }
 
 describe("sharpDriver", () => {

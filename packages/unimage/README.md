@@ -9,10 +9,10 @@
 
 - 🧾 **Serializable recipes** — every transformation is a serializable array of typed operations plus an output spec; the same recipe runs in the browser, on the server, or in a queue
 - 🔌 **Pluggable drivers** — sharp, `@napi-rs/image`, Canvas2D, and SVGO ship in one package; capabilities are queryable at runtime so applications degrade gracefully
-- 🧩 **Composable with `overlayDriver`** — stack drivers the way [unstorage](https://github.com/unjs/unstorage) stacks storage: the first driver that can decode the input (and encode the requested output) handles it
+- 🧩 **Composable with `overlayDriver`** — stack drivers the way [unstorage](https://github.com/unjs/unstorage) stacks storage; supported routes execute in order and unavailable optional backends fall through
 - 🌐 **Cross-runtime recipes** — shared RGBA fallbacks provide broad operation coverage, and capabilities expose backend limits
 - 🖼 **IPX-compatible server** — keep existing `/w_320,f_webp/id` URLs while swapping the engine; storage delegates to unstorage drivers, and the handler plugs straight into h3 and Nitro
-- 🛡 **SSRF guardrails built in** — protocol and host allow-lists, private-address blocking, and per-hop redirect validation on remote storage
+- 🛡 **SSRF guardrails built in** — protocol and host allow-lists, DNS/reserved-address blocking, and per-hop redirect validation on remote storage
 
 ## Installation
 
@@ -39,7 +39,6 @@ Core runtime dependencies are `h3` and `unpalette`. Image engines are optional p
 | Canvas2D in the browser and Node             | `pnpm add @napi-rs/canvas`         |
 | sharp WASM fallback for supported runtimes   | `pnpm add sharp @img/sharp-wasm32` |
 | SVG optimization                             | `pnpm add svgo`                    |
-| unstorage-backed storage                     | `pnpm add unstorage`               |
 
 ## Quick Start
 
@@ -146,7 +145,7 @@ await image.transform(input, {
 });
 ```
 
-`frames: "all"` is required for animation-aware transforms. `density` applies to SVG rasterization. Quality applies only to encoders with meaningful lossy quality; PNG and GIF are lossless format targets in the cross-driver API.
+`frames: "all"` is required for animation-aware transforms. `rasterDensity` applies to SVG rasterization. Quality applies only to encoders with meaningful lossy quality; PNG and GIF are lossless format targets in the cross-driver API.
 
 For one still frame, use `decode()`; for every GIF/WebP frame or TIFF page, use `decodeFrames()`:
 
@@ -178,7 +177,7 @@ if (!capability.supported) throw new Error("This runtime cannot run the pipeline
 | `quality`                                         | `q`       | `q_80`                          | Encoder quality for JPEG, WebP, AVIF, TIFF, HEIF, HEIC, and JXL                                                               |
 | `position`                                        | `pos`     | `pos_top`                       | Crop/cover anchor, including `entropy` and `attention`                                                                        |
 | `kernel`                                          |           | `kernel_lanczos3`               | Resize kernel                                                                                                                 |
-| `background`                                      | `b`       | `b_ff0000`                      | Background color for rotate/extend/flatten                                                                                    |
+| `background`                                      | `b`       | `b_ff0000`                      | Background color for resize contain, rotate, extend, and flatten                                                              |
 | `trim`                                            |           | `trim_10`                       | Trim border pixels within threshold                                                                                           |
 | `extend`                                          |           | `extend_10_0_10_0`              | Pad edges with `background`, `copy`, `repeat`, or `mirror`                                                                    |
 | `extract` / `crop`                                |           | `extract_left_top_right_bottom` | Crop a region                                                                                                                 |
@@ -204,6 +203,8 @@ if (!capability.supported) throw new Error("This runtime cannot run the pipeline
 | `ensurealpha`                                     |           | `ensurealpha`                   | Add an alpha channel                                                                                                          |
 | `flatten` / `unflatten`                           |           | `flatten`                       | Merge/remove alpha against a background                                                                                       |
 | `animated`                                        | `a`       | `animated`                      | Decode every frame; GIF output uses all frames by default                                                                     |
+
+Unknown modifiers are rejected rather than silently ignored. Alias keys match complete path segments, so `/blog` does not capture `/blog-2`.
 
 Modifier-less URLs use a leading `_` segment: `/_/photos/cat.png`.
 

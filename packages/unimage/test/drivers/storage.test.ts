@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { fsDriver } from "../src/storage/fs";
+import { fsDriver } from "../../src/storage/fs";
 
 describe("fsDriver directory arrays", () => {
   let root: string | undefined;

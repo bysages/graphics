@@ -2,15 +2,15 @@ import { createStorage } from "unstorage";
 import memoryDriver from "unstorage/drivers/memory";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createImageProxy, modifiersToRecipe } from "../src/proxy";
+import { createImageProxy, modifiersToRecipe } from "../../src/proxy";
 import {
   createImageProxyFetchHandler,
   createImageProxyHandler,
   parseImageProxyURL,
-} from "../src/server";
-import { httpDriver } from "../src/storage/http";
-import { unstorageStorage } from "../src/storage/unstorage";
-import type { ImageCapabilities, ImageDriver, ImageRecipe } from "../src/types";
+} from "../../src/server";
+import { httpDriver } from "../../src/storage/http";
+import { unstorageStorage } from "../../src/storage/unstorage";
+import type { ImageCapabilities, ImageDriver, ImageRecipe } from "../../src/types";
 
 function createDriver(): ImageDriver {
   return {
@@ -152,6 +152,85 @@ describe("createImageProxyFetchHandler", () => {
     });
     await expect(handler("http://localhost/clahe_10,f_png/source.png")).resolves.toMatchObject({
       status: 400,
+    });
+  });
+
+  it("negotiates exact and wildcard Accept preferences", async () => {
+    const proxy = createImageProxy({ driver: createDriver(), storage });
+    const handler = createImageProxyFetchHandler(proxy);
+    const exact = await handler(
+      new Request("http://localhost/f_auto/source.png", {
+        headers: { accept: "image/webp;q=0.2, image/png;q=0.8" },
+      }),
+    );
+    expect(exact.headers.get("content-type")).toBe("image/png");
+
+    const wildcard = await handler(
+      new Request("http://localhost/f_auto/source.png", {
+        headers: { accept: "image/*" },
+      }),
+    );
+    expect(wildcard.headers.get("content-type")).toBe("image/avif");
+  });
+
+  it("honours If-Modified-Since when source metadata has mtime", async () => {
+    const mtime = new Date("2024-01-01T00:00:00.000Z");
+    const proxy = createImageProxy({
+      driver: createDriver(),
+      storage: {
+        name: "test-meta",
+        getMeta: () => ({ mtime, maxAge: 60 }),
+        getData: () => new Uint8Array([9, 9, 9]),
+      },
+    });
+    const handler = createImageProxyFetchHandler(proxy);
+    const response = await handler(
+      new Request("http://localhost/w_2,f_png/source.png", {
+        headers: { "if-modified-since": "Mon, 01 Jan 2024 00:00:01 GMT" },
+      }),
+    );
+    expect(response.status).toBe(304);
+    expect(response.headers.get("last-modified")).toBe("Mon, 01 Jan 2024 00:00:00 GMT");
+  });
+
+  it("maps aborted requests and invalid URLs to stable HTTP errors", async () => {
+    const proxy = createImageProxy({ driver: createDriver(), storage });
+    const handler = createImageProxyFetchHandler(proxy);
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = await handler(
+      new Request("http://localhost/w_2,f_png/source.png", { signal: controller.signal }),
+    );
+    expect(aborted.status).toBe(408);
+    await expect(handler("not-a-url")).resolves.toMatchObject({ status: 400 });
+  });
+
+  it("rejects unknown modifiers and unsafe extension sizes", async () => {
+    const proxy = createImageProxy({ driver: createDriver(), storage, maxOutputDimension: 64 });
+    const handler = createImageProxyFetchHandler(proxy);
+    await expect(handler("http://localhost/noise_10,f_png/source.png")).resolves.toMatchObject({
+      status: 400,
+    });
+    await expect(
+      handler("http://localhost/extend_-1_0_0_0,f_png/source.png"),
+    ).resolves.toMatchObject({ status: 400 });
+    await expect(
+      handler("http://localhost/extend_128_0_0_0,f_png/source.png"),
+    ).resolves.toMatchObject({ status: 400 });
+  });
+
+  it("matches aliases only on path boundaries", async () => {
+    await memory.setItemRaw("/assets/cat.png", new Uint8Array([7, 7, 7]));
+    const proxy = createImageProxy({
+      driver: createDriver(),
+      storage,
+      alias: { "/blog": "/assets" },
+    });
+    await expect(proxy("/blog/cat.png", { f: "png" }).process()).resolves.toMatchObject({
+      format: "png",
+    });
+    await expect(proxy("/blog-2/cat.png", { f: "png" }).process()).rejects.toMatchObject({
+      status: 404,
     });
   });
 

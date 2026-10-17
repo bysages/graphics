@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { UnImageError } from "../src/errors";
+import { UnImageError } from "../../src/errors";
 import {
   checkRecipeCapabilities,
   digestRecipe,
   parseImageRecipe,
   serializeRecipe,
-} from "../src/recipe";
-import type { ImageCapabilities, ImageRecipe } from "../src/types";
+} from "../../src/recipe";
+import type { ImageCapabilities, ImageRecipe } from "../../src/types";
 
 const recipe: ImageRecipe = {
   operations: [
@@ -47,6 +47,42 @@ describe("unimage recipes", () => {
         output: { format: "webp" },
       }),
     ).toThrow(UnImageError);
+  });
+
+  it("rejects invalid operation options instead of dropping them", () => {
+    expect(() =>
+      parseImageRecipe({
+        operations: [{ type: "resize", width: 1, kernel: "magic" } as never],
+        output: { format: "png" },
+      }),
+    ).toThrow(UnImageError);
+    expect(() =>
+      parseImageRecipe({
+        operations: [{ type: "linear", a: Number.NaN } as never],
+        output: { format: "png" },
+      }),
+    ).toThrow(UnImageError);
+    expect(() =>
+      parseImageRecipe({
+        operations: [{ type: "tint", color: "nope" }],
+        output: { format: "png" },
+      }),
+    ).toThrow(UnImageError);
+    expect(() =>
+      parseImageRecipe({
+        operations: [{ type: "autoOrient", unexpected: true } as never],
+        output: { format: "png" },
+      }),
+    ).toThrow(UnImageError);
+    expect(() =>
+      parseImageRecipe({ operations: [], output: { format: "png", metadata: "strip" } as never }),
+    ).toThrow(UnImageError);
+  });
+
+  it("serializes the parsed recipe rather than unvalidated source fields", () => {
+    expect(serializeRecipe({ operations: [], output: { format: "png" } })).toBe(
+      '{"operations":[],"output":{"format":"png","metadataPolicy":"strip"}}',
+    );
   });
 
   it("serializes recipes deterministically regardless of key order", () => {

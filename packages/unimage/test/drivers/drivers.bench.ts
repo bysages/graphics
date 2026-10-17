@@ -60,7 +60,9 @@ beforeAll(async () => {
     <rect width="1024" height="1024" fill="url(#g)"/>
     ${Array.from({ length: 180 }, (_, index) => `<circle cx="${(index * 89) % 1024}" cy="${(index * 173) % 1024}" r="${18 + (index % 42)}" fill="#ffffff" opacity="0.08"/>`).join("")}
   </svg>`);
-  animatedGif = new Uint8Array(await readFile(new URL("./fixtures/animated.gif", import.meta.url)));
+  animatedGif = new Uint8Array(
+    await readFile(new URL("../fixtures/animated.gif", import.meta.url)),
+  );
 });
 
 const benchOptions = { time: 800, iterations: 8 };
@@ -125,9 +127,9 @@ describe("unimage drivers", () => {
     await bench.compare(
       bench("sharp AVIF", () => sharp.transform(sourcePng, recipe)),
       bench("napi AVIF", () => napi.transform(sourcePng, recipe)),
-      benchOptions,
+      { ...benchOptions, time: 100, iterations: 2 },
     );
-  });
+  }, 120_000);
 
   test("rasterize SVG to PNG", async ({ bench }) => {
     const recipe = {

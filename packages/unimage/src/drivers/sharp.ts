@@ -58,6 +58,7 @@ const nativeOperations = new Set<ImageOperation["type"]>([
 ]);
 
 const fallbackOperations = new Set<ImageOperation["type"]>([
+  "opacity",
   "dilate",
   "erode",
   "clahe",
@@ -193,6 +194,8 @@ function applyNativeOperation(instance: SharpInstance, operation: ImageOperation
               ? undefined
               : operation.kernel,
         position: resizePosition(operation),
+        background:
+          operation.background === undefined ? undefined : toColorLike(operation.background),
         withoutEnlargement: operation.withoutEnlargement === true || undefined,
       });
     }
@@ -263,10 +266,10 @@ function applyNativeOperation(instance: SharpInstance, operation: ImageOperation
       return instance.linear(operation.a ?? 1, operation.b ?? 0);
     case "modulate":
       return instance.modulate({
-        brightness: operation.brightness,
-        saturation: operation.saturation,
-        hue: operation.hue,
-        lightness: operation.lightness,
+        ...(operation.brightness === undefined ? {} : { brightness: operation.brightness }),
+        ...(operation.saturation === undefined ? {} : { saturation: operation.saturation }),
+        ...(operation.hue === undefined ? {} : { hue: operation.hue }),
+        ...(operation.lightness === undefined ? {} : { lightness: operation.lightness }),
       });
     case "contrast": {
       const amount = operation.amount / 100;
@@ -641,7 +644,11 @@ export function sharpDriver(options: SharpDriverOptions = {}): ImageDriver {
             operation: operation.type,
           });
         }
-        const { data, info } = await instance.raw().toBuffer({ resolveWithObject: true });
+        const { data, info } = await instance
+          .ensureAlpha()
+          .toColourspace("srgb")
+          .raw()
+          .toBuffer({ resolveWithObject: true });
         const filtered = applyPixelFilter(
           {
             data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),

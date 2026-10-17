@@ -2,9 +2,9 @@ import { createStorage, type Driver } from "unstorage";
 import memoryDriver from "unstorage/drivers/memory";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createImageProxy } from "../src/proxy";
-import { unstorageStorage } from "../src/storage/unstorage";
-import type { ImageCapabilities, ImageDriver, ImageRecipe } from "../src/types";
+import { createImageProxy } from "../../src/proxy";
+import { unstorageStorage } from "../../src/storage/unstorage";
+import type { ImageCapabilities, ImageDriver, ImageRecipe } from "../../src/types";
 
 function createDriver(): ImageDriver {
   return {

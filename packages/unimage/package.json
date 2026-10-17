@@ -57,11 +57,13 @@
     "dev": "vp pack --watch",
     "build": "vp pack",
     "prepack": "pnpm build",
-    "release": "basis publish"
+    "release": "basis publish",
+    "test": "vp test run"
   },
   "dependencies": {
     "h3": "2.0.2",
-    "unpalette": "workspace:*"
+    "unpalette": "workspace:*",
+    "unstorage": "1.17.5"
   },
   "devDependencies": {
     "@napi-rs/canvas": "1.0.11",
@@ -73,9 +75,9 @@
   "peerDependencies": {
     "@napi-rs/canvas": ">=1.0 <2",
     "@napi-rs/image": ">=1.15 <2",
+    "@napi-rs/image-wasm32-wasi": "1.15.0",
     "sharp": "^0.35.0",
-    "svgo": "^4.1.0",
-    "unstorage": ">=1.8 <3"
+    "svgo": "^4.1.0"
   },
   "peerDependenciesMeta": {
     "@napi-rs/canvas": {
@@ -90,7 +92,7 @@
     "svgo": {
       "optional": true
     },
-    "unstorage": {
+    "@napi-rs/image-wasm32-wasi": {
       "optional": true
     }
   },

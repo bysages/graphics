@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { overlayDriver } from "../src/drivers/overlay";
-import { svgoDriver } from "../src/drivers/svgo";
-import type { ImageCapabilities, ImageDriver } from "../src/types";
+import { overlayDriver } from "../../src/drivers/overlay";
+import { svgoDriver } from "../../src/drivers/svgo";
+import type { ImageCapabilities, ImageDriver } from "../../src/types";
 
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="4"><rect width="8" height="4" fill="red"/></svg>`;
 

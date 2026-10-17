@@ -145,7 +145,32 @@ export async function sniffImageFormat(input: ImageInput): Promise<SniffedImageF
   const fromMagic = matchMagic(bytes);
   if (fromMagic !== undefined) return fromMagic;
 
-  const prefix = new TextDecoder().decode(bytes).trimStart().slice(0, 64).toLowerCase();
-  if (prefix.startsWith("<?xml") || prefix.startsWith("<svg")) return "svg";
-  return undefined;
+  const prefix = svgCandidatePrefix(bytes);
+  return prefix.startsWith("<svg") ? "svg" : undefined;
+}
+
+function svgCandidatePrefix(bytes: Uint8Array): string {
+  let text = new TextDecoder().decode(bytes.subarray(0, 4096)).trimStart();
+  let previous = "";
+  while (text !== previous) {
+    previous = text;
+    text = text.trimStart();
+    if (text.startsWith("\uFEFF")) text = text.slice(1);
+    if (text.startsWith("<?")) {
+      const end = text.indexOf("?>");
+      if (end === -1) break;
+      text = text.slice(end + 2);
+    }
+    if (text.startsWith("<!--")) {
+      const end = text.indexOf("-->");
+      if (end === -1) break;
+      text = text.slice(end + 3);
+    }
+    if (/^<!doctype/i.test(text)) {
+      const end = text.indexOf(">");
+      if (end === -1) break;
+      text = text.slice(end + 1);
+    }
+  }
+  return text.trimStart().slice(0, 128).toLowerCase();
 }

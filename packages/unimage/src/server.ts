@@ -42,7 +42,18 @@ const modifierSeparator = /[&,]/g;
 const modifierValueSeparator = /[:=_]/;
 
 export function parseImageProxyURL(url: string): ImageProxyParsedURL {
-  const [modifiersString = "", ...idSegments] = new URL(url).pathname.slice(1).split("/");
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch (error) {
+    throw new HTTPError({
+      status: 400,
+      statusText: "UNIMAGE_INVALID_URL",
+      message: `Invalid request URL: ${url}`,
+      cause: error,
+    });
+  }
+  const [modifiersString = "", ...idSegments] = pathname.slice(1).split("/");
 
   const id = decodeURIComponentSafe(idSegments.join("/"));
   if (modifiersString === "") {
@@ -86,15 +97,22 @@ export function createImageProxyHandler(
         request.headers.get("accept"),
         autoFormats,
       );
-      const image = proxy(parsed.id, modifiers);
-      const sourceMeta = await image.getSourceMeta();
-      const processed = await image.process();
+      const image = proxy(parsed.id, modifiers, { signal: request.signal });
+      const sourceMeta = await image.getSourceMeta({ signal: request.signal });
+      const processed = await image.process({ signal: request.signal });
       const etag = await createContentETag(processed.data);
 
-      if (etagMatches(request.headers.get("if-none-match"), etag)) {
+      if (
+        etagMatches(request.headers.get("if-none-match"), etag) ||
+        modifiedSinceMatches(
+          request.headers.get("if-modified-since"),
+          sourceMeta.mtime,
+          request.headers.get("if-none-match") !== null,
+        )
+      ) {
         return new Response(null, {
           status: 304,
-          headers: responseHeaders(sourceMeta.maxAge, etag),
+          headers: responseHeaders(sourceMeta.maxAge, etag, undefined, sourceMeta.mtime),
         });
       }
 
@@ -189,25 +207,49 @@ function negotiateFormat(
     .split(",")
     .map((item) => {
       const [mediaType = "", ...parameters] = item.trim().split(";");
-      const quality = parameters.find((parameter) => parameter.trim().startsWith("q="));
+      const qualityParameter = parameters.find((parameter) => parameter.trim().startsWith("q="));
+      const quality = qualityParameter === undefined ? 1 : Number(qualityParameter.trim().slice(2));
       return {
         mediaType: (mediaType ?? "").trim().toLowerCase(),
-        quality: quality === undefined ? 1 : Number(quality.trim().slice(2)),
+        quality: Number.isFinite(quality) ? Math.max(0, Math.min(1, quality)) : 0,
       };
     })
-    .filter((item) => item.quality > 0);
+    .filter((item) => item.mediaType !== "" && item.quality > 0);
+
+  const exact = new Map(preferences.map((item) => [item.mediaType, item.quality]));
+  const wildcard = (type: string): number => {
+    const mime = `image/${type}`;
+    if (exact.has(mime)) return exact.get(mime)!;
+    const imageWildcard = preferences.find((item) => item.mediaType === "image/*");
+    if (imageWildcard !== undefined) return imageWildcard.quality;
+    const anyWildcard = preferences.find((item) => item.mediaType === "*/*");
+    if (anyWildcard !== undefined) return anyWildcard.quality;
+    return 0;
+  };
 
   let winner: ImageProxyAutoFormat | undefined;
   let winnerQuality = -1;
   for (const candidate of candidates) {
-    const mime = `image/${candidate}`;
-    const quality = preferences.find((item) => item.mediaType === mime)?.quality ?? 0;
+    const quality = wildcard(candidate);
     if (quality > winnerQuality) {
       winner = candidate;
       winnerQuality = quality;
     }
   }
   return winner ?? "jpeg";
+}
+
+function modifiedSinceMatches(
+  header: string | null,
+  mtime: Date | undefined,
+  hasETagCondition: boolean,
+): boolean {
+  if (header === null || hasETagCondition || mtime === undefined) return false;
+  const condition = new Date(header);
+  return (
+    !Number.isNaN(condition.getTime()) &&
+    Math.floor(mtime.getTime() / 1000) <= Math.floor(condition.getTime() / 1000)
+  );
 }
 
 function responseHeaders(

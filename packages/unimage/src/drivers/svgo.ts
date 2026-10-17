@@ -24,6 +24,32 @@ export interface SvgoDriverOptions {
 const svgOpeningTag = /<svg\b[^>]*>/i;
 const attribute = (name: string) => new RegExp(`(?:^|\\s)${name}\\s*=\\s*["']([^"']+)["']`, "i");
 
+export function isSvgText(value: string): boolean {
+  let text = value.trimStart();
+  let previous = "";
+  while (text !== previous) {
+    previous = text;
+    text = text.trimStart();
+    if (text.startsWith("\uFEFF")) text = text.slice(1);
+    if (text.startsWith("<?")) {
+      const end = text.indexOf("?>");
+      if (end === -1) return false;
+      text = text.slice(end + 2);
+    }
+    if (text.startsWith("<!--")) {
+      const end = text.indexOf("-->");
+      if (end === -1) return false;
+      text = text.slice(end + 3);
+    }
+    if (/^<!doctype/i.test(text)) {
+      const end = text.indexOf(">");
+      if (end === -1) return false;
+      text = text.slice(end + 1);
+    }
+  }
+  return text.trimStart().startsWith("<svg");
+}
+
 export async function decodeSvg(input: ImageInput): Promise<string> {
   if (input instanceof Blob) return await input.text();
   if (input instanceof Uint8Array) return new TextDecoder().decode(input);
@@ -71,8 +97,7 @@ function loadRuntime(options: SvgoDriverOptions): Promise<SvgoRuntime> {
 export function svgoDriver(options: SvgoDriverOptions = {}): ImageDriver {
   async function load(input: ImageInput): Promise<{ svg: string; metadata: ImageMetadata }> {
     const svg = await decodeSvg(input);
-    const normalized = svg.trim().toLowerCase();
-    if (!normalized.startsWith("<?xml") && !normalized.startsWith("<svg")) {
+    if (!isSvgText(svg)) {
       throw new UnImageError("Image input is not SVG.", { code: "UNIMAGE_INVALID_INPUT" });
     }
     return {
@@ -109,34 +134,9 @@ export function svgoDriver(options: SvgoDriverOptions = {}): ImageDriver {
         notes: ["Optimizes vector input without raster operations."],
       });
     },
-    checkRecipe(recipe: ImagePipelineConfig): Promise<ImageCapabilityResult> {
-      const capabilities: ImageCapabilities = {
-        driver: this.name,
-        formats: {
-          svg: {
-            decode: {
-              pixelFormats: [],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: true,
-            },
-            encode: {
-              compressionModes: ["lossless"],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: true,
-            },
-          },
-        },
-        metadataRead: true,
-        operations: {},
-      };
-
-      return Promise.resolve(
-        checkRecipeCapabilities(recipe, capabilities, () => ({ supported: false })),
-      );
+    async checkRecipe(recipe: ImagePipelineConfig): Promise<ImageCapabilityResult> {
+      const capabilities = await this.capabilities();
+      return checkRecipeCapabilities(recipe, capabilities, () => ({ supported: false }));
     },
 
     async metadata(input): Promise<ImageMetadata> {
@@ -157,8 +157,18 @@ export function svgoDriver(options: SvgoDriverOptions = {}): ImageDriver {
       }
 
       const { svg } = await load(input);
-      if (options.optimize === false) return encode(svg);
       const runtime = await loadRuntime(options);
+      if (options.optimize === false) {
+        try {
+          return encode(runtime.optimize(svg, { plugins: ["removeScripts"] }).data);
+        } catch (error) {
+          throw new UnImageError("The SVG could not be sanitized.", {
+            code: "UNIMAGE_ENCODE",
+            format: "svg",
+            cause: error,
+          });
+        }
+      }
       const userPlugins = Array.isArray(options.config?.plugins) ? options.config.plugins : [];
       const optimizePlugins =
         options.optimize &&

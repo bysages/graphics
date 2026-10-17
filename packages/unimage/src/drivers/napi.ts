@@ -14,7 +14,7 @@ import type {
   RawImageFrame,
   RawImageData,
 } from "../types";
-import { applyPixelFilter } from "../utils/filters";
+import { applyPixelFilter, parseColor } from "../utils/filters";
 import { sniffImageFormat } from "../utils/format";
 import { decodeSvg, parseSvgMetadata } from "./svgo";
 
@@ -95,7 +95,6 @@ const resizeFilterCatmullRom = 2;
 const resizeFilterLanczos3 = 4;
 const resizeFitCover = 0;
 const resizeFitFill = 1;
-const resizeFitInside = 2;
 const orientationHorizontal = 1;
 const orientationMirrorHorizontal = 2;
 const orientationMirrorVertical = 4;
@@ -161,6 +160,54 @@ async function loadModule(options: NapiDriverOptions): Promise<NapiModule> {
       },
     );
   }
+}
+
+function normalizeRawToRgba(
+  data: Uint8Array,
+  width: number,
+  height: number,
+  colorType: number,
+): Uint8Array {
+  const pixels = width * height;
+  if (colorType === 3) return data;
+  const output = new Uint8Array(pixels * 4);
+  if (colorType === 0) {
+    for (let index = 0; index < pixels; index += 1) {
+      const value = data[index]!;
+      output.set([value, value, value, 255], index * 4);
+    }
+    return output;
+  }
+  if (colorType === 1) {
+    for (let index = 0; index < pixels; index += 1) {
+      const value = data[index * 2]!;
+      output.set([value, value, value, data[index * 2 + 1]!], index * 4);
+    }
+    return output;
+  }
+  if (colorType === 2) {
+    for (let index = 0; index < pixels; index += 1) {
+      output.set([data[index * 3]!, data[index * 3 + 1]!, data[index * 3 + 2]!, 255], index * 4);
+    }
+    return output;
+  }
+  throw new UnImageError("Napi-image returned an unsupported raw pixel layout.", {
+    code: "UNIMAGE_DECODE",
+  });
+}
+
+async function toRgbaState(
+  transformer: NapiTransformer,
+  signal: AbortSignal | undefined,
+): Promise<RawImageData> {
+  const metadata = await transformer.metadata(false, signal);
+  const raw = new Uint8Array(await transformer.rawPixels(signal));
+  return {
+    data: normalizeRawToRgba(raw, metadata.width, metadata.height, metadata.colorType),
+    width: metadata.width,
+    height: metadata.height,
+    layout: "rgba8",
+  };
 }
 
 async function createTransformer(module: NapiModule, input: ImageInput): Promise<NapiTransformer> {
@@ -243,13 +290,15 @@ function resizeValues(
       if (targetWidth !== undefined && targetWidth >= width) return undefined;
       if (targetHeight !== undefined && targetHeight >= height) return undefined;
     }
-    const sourceWidth = targetWidth === undefined ? width : targetWidth;
-    const sourceHeight = targetHeight === undefined ? height : targetHeight;
-    const scale =
-      targetWidth === undefined ? (targetHeight ?? height) / height : targetWidth / width;
+    if (targetWidth === undefined) {
+      return {
+        width: Math.max(1, Math.round(width * ((targetHeight ?? height) / height))),
+        height: Math.max(1, targetHeight ?? height),
+      };
+    }
     return {
-      width: Math.max(1, Math.round(sourceWidth * scale)),
-      height: Math.max(1, Math.round(sourceHeight * scale)),
+      width: Math.max(1, targetWidth),
+      height: Math.max(1, Math.round(height * (targetWidth / width))),
     };
   }
 
@@ -447,9 +496,10 @@ async function applyOperation(
         });
         let focus: readonly [number, number] | undefined;
         if (operation.position === "entropy" || operation.position === "attention") {
+          const scaled = await transformer.metadata(false, signal);
           const raw = await transformer.rawPixels(signal);
           focus = smartFocus(
-            { data: new Uint8Array(raw), width: current.width, height: current.height },
+            { data: new Uint8Array(raw), width: scaled.width, height: scaled.height },
             operation.position === "entropy" ? "entropy" : "attention",
           );
         }
@@ -464,12 +514,54 @@ async function applyOperation(
         transformer.crop(x, y, target.width, target.height);
         return;
       }
-      const fit =
-        operation.fit === "cover"
-          ? resizeFitCover
-          : operation.fit === "fill" || operation.fit === "outside"
-            ? resizeFitFill
-            : resizeFitInside;
+      if (operation.fit === "contain") {
+        const scale = Math.min(target.width / current.width, target.height / current.height);
+        const containedWidth = Math.max(1, Math.round(current.width * scale));
+        const containedHeight = Math.max(1, Math.round(current.height * scale));
+        transformer.resize({
+          width: containedWidth,
+          height: containedHeight,
+          filter,
+          fit: resizeFitFill,
+        });
+        const raw = await transformer.rawPixels(signal);
+        const [red, green, blue, alpha] = parseColor(operation.background ?? "#000000");
+        const position = operation.position;
+        const x =
+          position === "left" || position === "left top" || position === "left bottom"
+            ? 0
+            : position === "right" || position === "right top" || position === "right bottom"
+              ? target.width - containedWidth
+              : Math.floor((target.width - containedWidth) / 2);
+        const y =
+          position === "top" || position === "left top" || position === "right top"
+            ? 0
+            : position === "bottom" || position === "left bottom" || position === "right bottom"
+              ? target.height - containedHeight
+              : Math.floor((target.height - containedHeight) / 2);
+        return {
+          kind: undefined,
+          data: applyPixelFilter(
+            {
+              data: new Uint8Array(raw),
+              width: containedWidth,
+              height: containedHeight,
+            },
+            {
+              type: "extend",
+              top: Math.max(0, y),
+              right: Math.max(0, target.width - containedWidth - x),
+              bottom: Math.max(0, target.height - containedHeight - y),
+              left: Math.max(0, x),
+              background: `rgba(${red}, ${green}, ${blue}, ${alpha / 255})`,
+            },
+          ).data,
+          width: target.width,
+          height: target.height,
+          layout: "rgba8",
+        } as RawImageData;
+      }
+      const fit = (operation.fit ?? "cover") === "cover" ? resizeFitCover : resizeFitFill;
       transformer.resize({ width: target.width, height: target.height, filter, fit });
       return;
     }
@@ -527,19 +619,27 @@ async function applyOperation(
       return;
     case "convolve": {
       if (
-        operation.width !== 3 ||
-        operation.height !== 3 ||
-        operation.border !== undefined ||
-        (operation.scale !== undefined && operation.scale !== 1) ||
-        (operation.offset !== undefined && operation.offset !== 0)
+        operation.width === 3 &&
+        operation.height === 3 &&
+        operation.border === undefined &&
+        (operation.scale === undefined || operation.scale === 1) &&
+        (operation.offset === undefined || operation.offset === 0)
       ) {
-        throw new UnImageError("Napi-image convolve only supports unscaled 3×3 kernels.", {
-          code: "UNIMAGE_UNSUPPORTED_OPERATION",
-          operation: "convolve",
-        });
+        transformer.filter3x3([...operation.kernel]);
+        return;
       }
-      transformer.filter3x3([...operation.kernel]);
-      return;
+      const current = await transformer.metadata(false, signal);
+      const raw = await transformer.rawPixels(signal);
+      return {
+        kind: undefined,
+        data: applyPixelFilter(
+          { data: new Uint8Array(raw), width: current.width, height: current.height },
+          operation,
+        ).data,
+        width: current.width,
+        height: current.height,
+        layout: "rgba8",
+      } as RawImageData;
     }
     case "removeAlpha":
     case "ensureAlpha": {
@@ -950,148 +1050,18 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
       }
     },
 
-    checkRecipe(recipe: ImagePipelineConfig): Promise<ImageCapabilityResult> {
-      const capabilities: ImageCapabilities = {
-        driver: this.name,
-        formats: {
-          png: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossless"],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          jpeg: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: true,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          webp: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: true,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          avif: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: true,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          svg: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: true,
-            },
-            encode: {
-              compressionModes: [],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-        },
-        metadataRead: true,
-        operations: {
-          autoOrient: { supported: true },
-          resize: { supported: true },
-          crop: { supported: true },
-          rotate: {
-            supported: true,
-            notes: ["Only multiples of 90 degrees are supported."],
-          },
-          flip: { supported: true },
-          grayscale: { supported: true },
-          invert: { supported: true },
-          blur: { supported: true },
-          trim: { supported: true },
-          extend: { supported: true },
-          sharpen: { supported: true },
-          clahe: { supported: true },
-          median: { supported: true },
-          dilate: { supported: true },
-          erode: { supported: true },
-          flatten: { supported: true },
-          unflatten: { supported: true },
-          gamma: { supported: true },
-          normalize: { supported: true },
-          threshold: { supported: true },
-          linear: { supported: true },
-          modulate: { supported: true },
-          opacity: { supported: true },
-          tint: { supported: true },
-        },
-      };
-
-      return Promise.resolve(
-        checkRecipeCapabilities(recipe, capabilities, (operation) => {
-          const capability = capabilities.operations[operation.type];
-          if (
-            operation.type === "convolve" &&
-            (operation.width !== 3 ||
-              operation.height !== 3 ||
-              operation.border !== undefined ||
-              operation.scale !== undefined ||
-              operation.offset !== undefined)
-          ) {
-            return {
-              supported: false,
-              notes: ["Napi-image convolve only supports unscaled 3×3 kernels."],
-            };
-          }
-          if (operation.type === "rotate" && operation.angle % 90 !== 0) {
-            return {
-              supported: false,
-              notes: ["Napi-image rotation only supports 90 degree multiples."],
-            };
-          }
-          return capability ?? { supported: false };
-        }),
-      );
+    async checkRecipe(recipe: ImagePipelineConfig): Promise<ImageCapabilityResult> {
+      const capabilities = await this.capabilities();
+      return checkRecipeCapabilities(recipe, capabilities, (operation) => {
+        const capability = capabilities.operations[operation.type];
+        if (operation.type === "rotate" && operation.angle % 90 !== 0) {
+          return {
+            supported: false,
+            notes: ["Napi-image rotation only supports 90 degree multiples."],
+          };
+        }
+        return capability ?? { supported: false };
+      });
     },
 
     async metadata(input, context): Promise<ImageMetadata> {
@@ -1147,32 +1117,15 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
 
       const module = await loadModule(options);
       let state: ImageInput = input;
-      let finalMetadata: NapiImageMetadata | undefined;
-      if (recipe.operations.length === 0) {
+      for (const operation of recipe.operations) {
         const transformer = await createTransformer(module, state);
-        finalMetadata = await transformer.metadata(false, context?.signal);
-        state = await encode(
-          transformer,
-          recipe.output.format,
-          "quality" in recipe.output ? recipe.output.quality : undefined,
-          "lossless" in recipe.output ? recipe.output.lossless : undefined,
-          context?.signal,
-        );
-      }
-
-      for (const [index, operation] of recipe.operations.entries()) {
-        const transformer = await createTransformer(module, state);
-        let transformerToEncode = transformer;
         try {
           const nextState = await applyOperation(module, transformer, operation, context?.signal);
           if (nextState) {
             state = nextState;
-            transformerToEncode = await createTransformer(module, state);
+            continue;
           }
-
-          if (index === recipe.operations.length - 1) {
-            finalMetadata = await transformerToEncode.metadata(false, context?.signal);
-          }
+          state = await toRgbaState(transformer, context?.signal);
         } catch (error) {
           if (error instanceof UnImageError) throw error;
           if (context?.signal?.aborted) {
@@ -1187,51 +1140,43 @@ export function napiDriver(options: NapiDriverOptions = {}): ImageDriver {
             cause: error,
           });
         }
+      }
 
-        state = await encode(
-          transformerToEncode,
-          index === recipe.operations.length - 1 ? recipe.output.format : "png",
-          index === recipe.operations.length - 1
-            ? "quality" in recipe.output
-              ? recipe.output.quality
-              : undefined
-            : undefined,
-          index === recipe.operations.length - 1
-            ? "lossless" in recipe.output
-              ? recipe.output.lossless
-              : undefined
-            : undefined,
+      const finalTransformer = await createTransformer(module, state);
+      try {
+        const sourceMetadata = await finalTransformer.metadata(false, context?.signal);
+        const encoded = await encode(
+          finalTransformer,
+          recipe.output.format,
+          "quality" in recipe.output ? recipe.output.quality : undefined,
+          "lossless" in recipe.output ? recipe.output.lossless : undefined,
           context?.signal,
         );
-      }
+        const metadata = normalizeMetadata(sourceMetadata, encoded.byteLength);
+        metadata.format = recipe.output.format;
+        metadata.mediaType = mediaTypes[recipe.output.format];
 
-      if (isRawImage(state)) {
-        finalMetadata = {
-          width: state.width,
-          height: state.height,
-          format: "png",
-          colorType: 3,
-        };
-      }
-      const metadata = normalizeMetadata(
-        finalMetadata ?? {
-          width: 1,
-          height: 1,
+        return {
+          kind: "encoded",
+          data: encoded,
           format: recipe.output.format,
-          colorType: 3,
-        },
-        state instanceof Uint8Array ? state.byteLength : undefined,
-      );
-      metadata.format = recipe.output.format;
-      metadata.mediaType = mediaTypes[recipe.output.format];
-
-      return {
-        kind: "encoded",
-        data: state instanceof Uint8Array ? state : new Uint8Array(),
-        format: recipe.output.format,
-        mediaType: metadata.mediaType,
-        metadata,
-      };
+          mediaType: metadata.mediaType,
+          metadata,
+        };
+      } catch (error) {
+        if (error instanceof UnImageError) throw error;
+        if (context?.signal?.aborted) {
+          throw new UnImageError("Image encode was aborted.", {
+            code: "UNIMAGE_ABORT",
+            cause: error,
+          });
+        }
+        throw new UnImageError("The image could not be encoded by napi-image.", {
+          code: "UNIMAGE_ENCODE",
+          format: recipe.output.format,
+          cause: error,
+        });
+      }
     },
   };
 }

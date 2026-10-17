@@ -140,8 +140,8 @@ export type ImageProxy = (
   modifiers?: Partial<ImageProxyModifiers>,
   requestOptions?: ImageProxyRequestOptions,
 ) => {
-  getSourceMeta: () => Promise<ImageProxySourceMeta>;
-  process: () => Promise<{
+  getSourceMeta: (options?: ImageProxyRequestOptions) => Promise<ImageProxySourceMeta>;
+  process: (options?: ImageProxyRequestOptions) => Promise<{
     data: Uint8Array;
     format: ImageFormat;
     metadata: ImageMetadata;
@@ -149,7 +149,59 @@ export type ImageProxy = (
 };
 
 const defaultMaxOutputDimension = 8192;
-const unsupportedModifiers = new Set<string>([]);
+const knownModifiers = new Set<string>([
+  "format",
+  "f",
+  "fit",
+  "resize",
+  "s",
+  "quality",
+  "q",
+  "background",
+  "b",
+  "position",
+  "pos",
+  "enlarge",
+  "kernel",
+  "trim",
+  "extend",
+  "extract",
+  "crop",
+  "rotate",
+  "autoorient",
+  "flip",
+  "flop",
+  "sharpen",
+  "median",
+  "blur",
+  "dilate",
+  "erode",
+  "clahe",
+  "contrast",
+  "removealpha",
+  "ensurealpha",
+  "flatten",
+  "unflatten",
+  "gamma",
+  "negate",
+  "normalize",
+  "threshold",
+  "linear",
+  "modulate",
+  "brightness",
+  "saturation",
+  "hue",
+  "lightness",
+  "opacity",
+  "tint",
+  "grayscale",
+  "animated",
+  "a",
+  "width",
+  "w",
+  "height",
+  "h",
+]);
 
 function invalidModifier(name: string, reason: string): HTTPError {
   return new HTTPError({
@@ -332,7 +384,7 @@ export function modifiersToRecipe(
 ): import("./types").ImageRecipe {
   const unsupported = Object.keys(modifiers)
     .filter((key) => modifiers[key as keyof ImageProxyModifiers] !== undefined)
-    .filter((key) => unsupportedModifiers.has(key));
+    .filter((key) => !knownModifiers.has(key));
   if (unsupported.length > 0) {
     throw new HTTPError({
       status: 400,
@@ -344,6 +396,7 @@ export function modifiersToRecipe(
   const max = maxOutputDimension === false ? Number.POSITIVE_INFINITY : maxOutputDimension;
   const operations: ImageOperation[] = [];
   const background = modifiers.background ?? modifiers.b;
+  const maxOperations = 32;
   if (toFlag(modifiers.autoorient)) operations.push({ type: "autoOrient" });
 
   if (modifiers.blur !== undefined) {
@@ -412,6 +465,13 @@ export function modifiersToRecipe(
   if (modifiers.extend !== undefined) {
     const parts = modifierParts(modifiers.extend, 5);
     const mode = parts[4];
+    const edges = [parts[0], parts[1], parts[2], parts[3]].map((value) => {
+      const amount = optionalNumber(value, `extend.edge`) ?? 0;
+      if (!Number.isInteger(amount) || amount < 0) {
+        throw invalidModifier("extend", "edge sizes must be non-negative integers");
+      }
+      return amount;
+    });
     const extendModes = ["background", "copy", "repeat", "mirror"] as const;
     if (mode !== undefined && !extendModes.includes(mode as (typeof extendModes)[number])) {
       throw new HTTPError({
@@ -420,12 +480,20 @@ export function modifiersToRecipe(
         message: `The "extend" mode is unsupported: ${mode}`,
       });
     }
+    const outputWidth = metadata.width + edges[1]! + edges[3]!;
+    const outputHeight = metadata.height + edges[0]! + edges[2]!;
+    if (
+      maxOutputDimension !== false &&
+      (outputWidth > maxOutputDimension || outputHeight > maxOutputDimension)
+    ) {
+      throw invalidModifier("extend", "would exceed maxOutputDimension");
+    }
     operations.push({
       type: "extend",
-      top: optionalNumber(parts[0], "extend.top") ?? 0,
-      right: optionalNumber(parts[1], "extend.right") ?? 0,
-      bottom: optionalNumber(parts[2], "extend.bottom") ?? 0,
-      left: optionalNumber(parts[3], "extend.left") ?? 0,
+      top: edges[0]!,
+      right: edges[1]!,
+      bottom: edges[2]!,
+      left: edges[3]!,
       ...(background === undefined ? {} : { background }),
       ...(mode === undefined || mode === "background"
         ? {}
@@ -595,6 +663,10 @@ export function modifiersToRecipe(
       ? ("all" as const)
       : undefined;
 
+  if (operations.length > maxOperations) {
+    throw invalidModifier("operations", "exceed the maximum supported pipeline length");
+  }
+
   return {
     operations,
     ...(frames === undefined ? {} : { input: { frames } }),
@@ -631,9 +703,10 @@ export function createImageProxy(userOptions: ImageProxyOptions): ImageProxy {
     options.svgo === false
       ? rasterDriver
       : overlayDriver(
-          svgoDriver(
-            options.svgo === true ? { runtime: "node" } : { runtime: "node", ...options.svgo },
-          ),
+          svgoDriver({
+            runtime: typeof window === "undefined" ? "node" : "browser",
+            ...(options.svgo === true ? {} : options.svgo),
+          }),
           rasterDriver,
         );
   const manager: ImageManager = createImageManager({ driver });
@@ -690,11 +763,12 @@ export function createImageProxy(userOptions: ImageProxyOptions): ImageProxy {
     }
 
     return {
-      getSourceMeta() {
+      getSourceMeta(requestOptions?: ImageProxyRequestOptions) {
         sourceMeta ??= (async () => {
+          const signal = requestOptions?.signal;
           const metadata = await resolvedStorage.getMeta(
             resolvedId,
-            requestOptions.signal === undefined ? {} : { signal: requestOptions.signal },
+            signal === undefined ? {} : { signal },
           );
           if (metadata === undefined) {
             throw new HTTPError({
@@ -713,13 +787,14 @@ export function createImageProxy(userOptions: ImageProxyOptions): ImageProxy {
         return sourceMeta;
       },
 
-      async process() {
+      async process(requestOptions?: ImageProxyRequestOptions) {
+        const signal = requestOptions?.signal;
         const metadata = await getSourceMetadata();
         const recipe = modifiersToRecipe(modifiers, metadata, options.maxOutputDimension);
         const result = await manager.transform(
           await awaitData(),
           recipe,
-          requestOptions.signal === undefined ? {} : { signal: requestOptions.signal },
+          signal === undefined ? {} : { signal },
         );
         return {
           data: result.data,
@@ -746,7 +821,7 @@ function normalizeAlias(alias: Record<string, string> | undefined): Record<strin
 
 function resolveAlias(id: string, alias: Record<string, string>): string {
   for (const [key, value] of Object.entries(alias)) {
-    if (id.startsWith(key)) {
+    if (id === key || id.startsWith(`${key}/`)) {
       const suffix = id.slice(key.length).replace(/^\/+/, "");
       const base = value.replace(/\/+$/, "");
       return suffix === "" ? base : `${base}/${suffix}`;

@@ -2,11 +2,11 @@ import { createStorage } from "unstorage";
 import memoryDriver from "unstorage/drivers/memory";
 import { describe, expect, it } from "vite-plus/test";
 
-import { napiDriver } from "../src/drivers/napi";
-import { createImageProxy } from "../src/proxy";
-import { parseImageRecipe } from "../src/recipe";
-import { unstorageStorage } from "../src/storage/unstorage";
-import type { ImageRecipe, RawImageData } from "../src/types";
+import { napiDriver } from "../../src/drivers/napi";
+import { createImageProxy } from "../../src/proxy";
+import { parseImageRecipe } from "../../src/recipe";
+import { unstorageStorage } from "../../src/storage/unstorage";
+import type { ImageRecipe, RawImageData } from "../../src/types";
 
 const raw: RawImageData = {
   data: new Uint8Array(16 * 16 * 4).fill(128),

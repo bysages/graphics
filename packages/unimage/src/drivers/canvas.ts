@@ -13,7 +13,7 @@ import type {
   RawImageFrame,
   RawImageData,
 } from "../types";
-import { applyPixelFilter, type RgbaImage } from "../utils/filters";
+import { applyPixelFilter, parseColor, type RgbaImage } from "../utils/filters";
 import { sniffImageFormat } from "../utils/format";
 
 interface ImageDataLike {
@@ -274,6 +274,11 @@ function resizeSurface(
   context.imageSmoothingEnabled = operation.kernel !== "nearest";
   context.imageSmoothingQuality = "high";
   const bothDimensions = operation.width !== undefined && operation.height !== undefined;
+  if (bothDimensions && fit === "contain") {
+    const [red, green, blue, alpha] = parseColor(operation.background ?? "#000000");
+    context.fillStyle = `rgba(${red}, ${green}, ${blue}, ${alpha / 255})`;
+    context.fillRect(0, 0, width, height);
+  }
 
   if (bothDimensions && fit === "cover") {
     const scale = Math.max(width / sourceWidth, height / sourceHeight);
@@ -299,13 +304,22 @@ function resizeSurface(
     );
   } else if (bothDimensions && fit === "contain") {
     const scale = Math.min(width / sourceWidth, height / sourceHeight);
-    context.drawImage(
-      surface,
-      (width - sourceWidth * scale) / 2,
-      (height - sourceHeight * scale) / 2,
-      sourceWidth * scale,
-      sourceHeight * scale,
-    );
+    const scaledWidth = Math.round(sourceWidth * scale);
+    const scaledHeight = Math.round(sourceHeight * scale);
+    const position = operation.position;
+    const x =
+      position === "left" || position === "left top" || position === "left bottom"
+        ? 0
+        : position === "right" || position === "right top" || position === "right bottom"
+          ? width - scaledWidth
+          : Math.floor((width - scaledWidth) / 2);
+    const y =
+      position === "top" || position === "left top" || position === "right top"
+        ? 0
+        : position === "bottom" || position === "left bottom" || position === "right bottom"
+          ? height - scaledHeight
+          : Math.floor((height - scaledHeight) / 2);
+    context.drawImage(surface, x, y, scaledWidth, scaledHeight);
   } else {
     context.drawImage(surface, 0, 0, width, height);
   }
@@ -512,8 +526,10 @@ function rotateSurface(
   const radians = (parseAngle(operation.angle) * Math.PI) / 180;
   const cos = Math.abs(Math.cos(radians));
   const sin = Math.abs(Math.sin(radians));
-  const width = Math.ceil(surface.width * cos + surface.height * sin);
-  const height = Math.ceil(surface.width * sin + surface.height * cos);
+  const roundBoundingBox = (value: number): number =>
+    Number.isInteger(Math.round(value)) ? Math.round(value) : Math.ceil(value);
+  const width = roundBoundingBox(surface.width * cos + surface.height * sin);
+  const height = roundBoundingBox(surface.width * sin + surface.height * cos);
   const target = createSurface(width, height);
   const context = surfaceContext(target);
 
@@ -661,6 +677,49 @@ export interface CanvasDriverOptions {
   nodeCanvas?: NodeCanvasModule;
 }
 
+const canvasOperationNames = [
+  "autoOrient",
+  "resize",
+  "crop",
+  "rotate",
+  "flip",
+  "grayscale",
+  "invert",
+  "blur",
+  "trim",
+  "extend",
+  "sharpen",
+  "median",
+  "dilate",
+  "erode",
+  "clahe",
+  "flatten",
+  "unflatten",
+  "gamma",
+  "normalize",
+  "threshold",
+  "linear",
+  "modulate",
+  "opacity",
+  "tint",
+  "contrast",
+  "convolve",
+  "removeAlpha",
+  "ensureAlpha",
+] as const;
+
+function unavailableCapabilities(driverName: string): ImageCapabilities {
+  return {
+    driver: driverName,
+    formats: {},
+    metadataRead: false,
+    operations: Object.fromEntries(
+      canvasOperationNames.map((operation) => [operation, { supported: false }]),
+    ) as ImageCapabilities["operations"],
+    notes: ["No canvas backend is available."],
+  };
+}
+
 export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
   if (options.nodeCanvas !== undefined) nodeCanvas = options.nodeCanvas;
   return {
@@ -668,6 +727,10 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
 
     async capabilities(): Promise<ImageCapabilities> {
       nodeCanvas ??= await resolveNodeCanvas();
+      if (nodeCanvas === undefined && !browserAvailable()) {
+        return unavailableCapabilities("canvas");
+      }
+
       const formats: Partial<ImageCapabilities["formats"]> = {};
       const surface = createSurface(1, 1);
       surfaceContext(surface).fillRect(0, 0, 1, 1);
@@ -748,119 +811,12 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
       };
     },
 
-    checkRecipe(recipe: ImagePipelineConfig): Promise<ImageCapabilityResult> {
-      const capabilities: ImageCapabilities = {
-        driver: this.name,
-        formats: {
-          png: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossless"],
-              quality: false,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          jpeg: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: true,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          webp: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-          avif: {
-            decode: {
-              pixelFormats: ["rgba8"],
-              frames: ["still"],
-              orientation: false,
-              rasterDensity: false,
-              vector: false,
-            },
-            encode: {
-              compressionModes: ["lossy"],
-              quality: true,
-              animation: false,
-              metadataPolicies: ["strip"],
-              sanitize: false,
-            },
-          },
-        },
-        metadataRead: true,
-        operations: {
-          autoOrient: {
-            supported: nodeCanvas === undefined,
-            ...(nodeCanvas === undefined
-              ? {}
-              : { notes: ["Canvas image decoding does not apply EXIF orientation."] }),
-          },
-          resize: { supported: true },
-          crop: { supported: true },
-          rotate: { supported: true },
-          flip: { supported: true },
-          grayscale: { supported: true },
-          invert: { supported: true },
-          blur: { supported: true },
-          trim: { supported: true },
-          extend: { supported: true },
-          sharpen: { supported: true },
-          median: { supported: true },
-          dilate: { supported: true },
-          erode: { supported: true },
-          clahe: { supported: true },
-          flatten: { supported: true },
-          unflatten: { supported: true },
-          gamma: { supported: true },
-          normalize: { supported: true },
-          threshold: { supported: true },
-          linear: { supported: true },
-          modulate: { supported: true },
-          opacity: { supported: true },
-          tint: { supported: true },
-          contrast: { supported: true },
-          convolve: { supported: true },
-          removeAlpha: { supported: true },
-          ensureAlpha: { supported: true },
-        },
-      };
-
-      return Promise.resolve(
-        checkRecipeCapabilities(recipe, capabilities, (operation) => {
-          const capability = capabilities.operations[operation.type];
-          return capability ?? { supported: false };
-        }),
-      );
+    async checkRecipe(recipe: ImagePipelineConfig): Promise<ImageCapabilityResult> {
+      const capabilities = await this.capabilities();
+      return checkRecipeCapabilities(recipe, capabilities, (operation) => {
+        const capability = capabilities.operations[operation.type];
+        return capability ?? { supported: false };
+      });
     },
 
     async metadata(input: ImageInput, context): Promise<ImageMetadata> {
@@ -902,13 +858,14 @@ export function canvasDriver(options: CanvasDriverOptions = {}): ImageDriver {
           height: bitmap.height,
           byteLength: blob.size,
         };
-        if (blob.type.startsWith("image/")) metadata.mediaType = blob.type;
-        if (blob.type === "image/png") {
-          metadata.format = "png";
-          metadata.hasAlpha = true;
-        } else if (blob.type === "image/jpeg") metadata.format = "jpeg";
-        else if (blob.type === "image/webp") metadata.format = "webp";
-        else if (blob.type === "image/avif") metadata.format = "avif";
+        const sniffed = await sniffImageFormat(input);
+        if (sniffed !== undefined) {
+          metadata.format = sniffed;
+          metadata.mediaType = mediaTypes[sniffed] ?? `image/${sniffed}`;
+        } else if (blob.type.startsWith("image/")) {
+          metadata.mediaType = blob.type;
+        }
+        if (sniffed === "png") metadata.hasAlpha = true;
         bitmap.close();
         return metadata;
       } catch (error) {

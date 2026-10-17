@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { UnImageError } from "../src/errors";
-import { createImageManager } from "../src/manager";
-import { checkRecipeCapabilities } from "../src/recipe";
-import type { ImageCapabilities, ImageDriver, RawImageData } from "../src/types";
+import { UnImageError } from "../../src/errors";
+import { createImageManager } from "../../src/manager";
+import { checkRecipeCapabilities } from "../../src/recipe";
+import type { ImageCapabilities, ImageDriver, RawImageData } from "../../src/types";
 
 const raw: RawImageData = {
   data: new Uint8Array([255, 0, 0, 255, 0, 255, 0, 255]),

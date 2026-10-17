@@ -66,6 +66,8 @@ export interface ResizeOperation {
   width?: number;
   height?: number;
   fit?: FitMode;
+  /** Letterbox color for `contain`; defaults to opaque black for sharp compatibility. */
+  background?: string;
   withoutEnlargement?: boolean;
   kernel?: ResizeKernel;
   position?: ImagePosition;

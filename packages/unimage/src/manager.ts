@@ -65,9 +65,19 @@ export function createImageManager(options: ImageManagerOptions): ImageManager {
 
     async metadata(input: ImageInput, config?: { signal?: AbortSignal }): Promise<ImageMetadata> {
       try {
-        return await driver.metadata(input, { signal: config?.signal });
+        const metadata = await driver.metadata(input, { signal: config?.signal });
+        if (config?.signal?.aborted) {
+          throw new UnImageError("Image metadata was aborted.", { code: "UNIMAGE_ABORT" });
+        }
+        return metadata;
       } catch (error) {
         if (error instanceof UnImageError) throw error;
+        if (config?.signal?.aborted) {
+          throw new UnImageError("Image metadata was aborted.", {
+            code: "UNIMAGE_ABORT",
+            cause: error,
+          });
+        }
         throw new UnImageError("Image metadata could not be read.", {
           code: "UNIMAGE_DECODE",
           cause: error,
@@ -162,7 +172,11 @@ export function createImageManager(options: ImageManagerOptions): ImageManager {
       }
 
       try {
-        return await driver.transform(input, parsedRecipe, { signal: config?.signal });
+        const result = await driver.transform(input, parsedRecipe, { signal: config?.signal });
+        if (config?.signal?.aborted) {
+          throw new UnImageError("Image processing was aborted.", { code: "UNIMAGE_ABORT" });
+        }
+        return result;
       } catch (error) {
         if (error instanceof UnImageError) throw error;
         if (config?.signal?.aborted) {

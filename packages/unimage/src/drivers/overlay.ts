@@ -64,9 +64,9 @@ function supportsDecodeFrames(
 }
 
 /**
- * Stack drivers by their own complete recipe check. The first driver that
- * reports the full input/read -> operations -> output route as supported
- * executes the request.
+ * Stack drivers by their own complete recipe check. Execution tries every
+ * supported route in order, so an optional native dependency can fall through
+ * to the next driver even when its static capability check passed.
  */
 export function overlayDriver(...drivers: ImageDriver[]): ImageDriver {
   if (drivers.length === 0) {
@@ -75,14 +75,16 @@ export function overlayDriver(...drivers: ImageDriver[]): ImageDriver {
     });
   }
 
-  async function pick(input: ImageInput, recipe?: ImageRecipe): Promise<ImageDriver> {
+  async function pick(input: ImageInput, recipe?: ImageRecipe): Promise<ImageDriver[]> {
     const inputFormat = await sniffImageFormat(input);
+    const selected: ImageDriver[] = [];
 
     for (const driver of drivers) {
       if (recipe === undefined) {
         const capabilities = await driver.capabilities();
         if (!supportsDecode(capabilities, inputFormat)) continue;
-        return driver;
+        selected.push(driver);
+        continue;
       }
 
       const pipeline: ImagePipelineConfig = {
@@ -93,9 +95,11 @@ export function overlayDriver(...drivers: ImageDriver[]): ImageDriver {
         operations: recipe.operations,
         output: recipe.output,
       };
-      if (await driver.checkRecipe(pipeline).then((result) => result.supported)) return driver;
+      if (await driver.checkRecipe(pipeline).then((result) => result.supported))
+        selected.push(driver);
     }
 
+    if (selected.length > 0) return selected;
     throw new UnImageError(
       inputFormat === undefined
         ? "No driver in the overlay stack accepts this input."
@@ -108,7 +112,17 @@ export function overlayDriver(...drivers: ImageDriver[]): ImageDriver {
     name: drivers.map((driver) => driver.name).join("+"),
 
     async capabilities(): Promise<ImageCapabilities> {
-      const all = await Promise.all(drivers.map((driver) => driver.capabilities()));
+      const settled = await Promise.allSettled(drivers.map((driver) => driver.capabilities()));
+      const all = settled
+        .map((result) => (result.status === "fulfilled" ? result.value : undefined))
+        .filter((capabilities): capabilities is ImageCapabilities => capabilities !== undefined);
+      const unavailable = settled
+        .map((result, index) =>
+          result.status === "rejected"
+            ? `${drivers[index]?.name}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
+            : undefined,
+        )
+        .filter((note): note is string => note !== undefined);
       const operations: Partial<Record<ImageOperation["type"], OperationCapability>> = {};
       const formats: ImageCapabilities["formats"] = {};
 
@@ -170,6 +184,7 @@ export function overlayDriver(...drivers: ImageDriver[]): ImageDriver {
         operations,
         notes: [
           ...new Set(all.flatMap((capabilities) => capabilities.notes ?? [])),
+          ...unavailable,
           "This summary is a union; execution uses each driver's complete recipe check.",
         ],
       };
@@ -236,8 +251,19 @@ export function overlayDriver(...drivers: ImageDriver[]): ImageDriver {
     },
 
     async transform(input: ImageInput, recipe, context?): Promise<ImageResult> {
-      const driver = await pick(input, recipe);
-      return driver.transform(input, recipe, context);
+      const candidates = await pick(input, recipe);
+      let lastError: unknown;
+      for (const driver of candidates) {
+        try {
+          return await driver.transform(input, recipe, context);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (lastError !== undefined) throw lastError;
+      throw new UnImageError("No driver in the overlay stack can process this input.", {
+        code: "UNIMAGE_DECODE",
+      });
     },
 
     ...(drivers.some((driver) => driver.dispose !== undefined)

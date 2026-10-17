@@ -2,11 +2,11 @@ import { createStorage } from "unstorage";
 import memoryDriver from "unstorage/drivers/memory";
 import { describe, expect, it } from "vite-plus/test";
 
-import { overlayDriver } from "../src/drivers/overlay";
-import { svgoDriver } from "../src/drivers/svgo";
-import { createImageProxy } from "../src/proxy";
-import { unstorageStorage } from "../src/storage/unstorage";
-import type { ImageCapabilities, ImageDriver } from "../src/types";
+import { overlayDriver } from "../../src/drivers/overlay";
+import { svgoDriver } from "../../src/drivers/svgo";
+import { createImageProxy } from "../../src/proxy";
+import { unstorageStorage } from "../../src/storage/unstorage";
+import type { ImageCapabilities, ImageDriver } from "../../src/types";
 
 const svg = `<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="24" height="12" viewBox="0 0 24 12"><script>alert(1)</script><rect width="24" height="12" fill="blue"/></svg>`;
 
@@ -42,7 +42,7 @@ describe("ImageProxy SVG passthrough", () => {
       ),
       svgo: { runtime: "node" },
     });
-    const handler = (await import("../src/server")).createImageProxyFetchHandler(proxy);
+    const handler = (await import("../../src/server")).createImageProxyFetchHandler(proxy);
     const response = await handler("http://localhost/f_svg/source.svg");
 
     if (response.status !== 200)
