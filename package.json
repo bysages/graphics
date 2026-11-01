@@ -40,7 +40,7 @@
     "@funish/basis": "0.3.0",
     "@rolldown/plugin-node-polyfills": "1.0.3",
     "@types/node": "26.6.5",
-    "typescript": "6.0.3",
+    "typescript": "7.0.2",
     "vite-plus": "1.1.0"
   },
   "packageManager": "pnpm@10.34.6+sha512.7e1ae66a83a9143c118cc1944f37cc4f2b8acddeda4b001cfa78908f6e46e45e15292739ca6c9d026426cc757e8e46"
