@@ -8,14 +8,14 @@
     "build": "vp build"
   },
   "dependencies": {
-    "@bysages/tokens": "0.4.3",
-    "@bysages/vue": "0.4.3",
-    "@napi-rs/image-wasm32-wasi": "1.15.0",
+    "@bysages/tokens": "0.6.0",
+    "@bysages/vue": "0.6.0",
+    "@napi-rs/image-wasm32-wasi": "1.16.0",
     "buffer": "6.0.3",
     "unimage": "workspace:*"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "6.0.10",
-    "vue": "3.5.43"
+    "vue": "3.5.45"
   }
 }
